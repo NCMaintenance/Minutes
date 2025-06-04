@@ -148,7 +148,7 @@ if not st.session_state.password_verified:
 # --- Sidebar ---
 with st.sidebar:
     st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=200, caption="HSE Logo")
-    st.title("🩺 MAI Recap")
+    st.title("📒 MAI Recap")
     if st.button("About this App", key="about_button_sidebar"):
         st.sidebar.info(
             "**MAI Recap** helps generate meeting minutes for the Health Service Executive (HSE). "
