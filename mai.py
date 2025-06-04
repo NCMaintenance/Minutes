@@ -96,14 +96,11 @@ if mode == "Upload audio file":
         audio_bytes = uploaded_audio
 
 elif mode == "Record using microphone":
-    # Streamlit >=1.32.0 supports st.audio_input. If not available, fallback to info.
-    if hasattr(st, "audio_input"):
-        recorded_audio = st.audio_input("🎙️ Click the microphone to record, then click again to stop and process.", key="audio_recorder_main")
-        if recorded_audio:
-            st.audio(recorded_audio, format="audio/wav")
-            audio_bytes = recorded_audio
-    else:
-        st.info("Audio recording requires Streamlit 1.32.0+ for st.audio_input. Please update your Streamlit package for direct microphone recording.")
+    # Use Streamlit's built-in audio_input (Streamlit >= 1.32.0)
+    recorded_audio = st.audio_input("🎙️ Click the microphone to record, then click again to stop and process.", key="audio_recorder_main")
+    if recorded_audio:
+        st.audio(recorded_audio, format="audio/wav")
+        audio_bytes = recorded_audio
 
 # --- Transcription and Analysis ---
 if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button"):
