@@ -118,6 +118,16 @@ def create_narrative_docx(narrative_text):
     output.seek(0)
     return output
 
+# --- Key Points Summary DOCX Export ---
+def create_keypoints_docx(text):
+    doc = Document()
+    doc.add_heading("HSE Capital & Estates Meeting – Key Points & Actions", level=1)
+    doc.add_paragraph(text)
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output
+
 # --- Configure Gemini API ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -355,6 +365,47 @@ Narrative Summary:
                 st.error(f"An error occurred during summarization: {e}")
                 if "structured" in st.session_state:
                     del st.session_state["structured"]
+
+# --- Key Points and Actions Summary ---
+if "transcript" in st.session_state and "minutes" in st.session_state:
+    if st.button("🧾 Summarise Meeting: Key Points & Actions", key="keypoints_button"):
+        with st.spinner("Summarising transcript for key points and actions..."):
+            try:
+                prompt_keypoints = f"""
+You are an AI assistant for HSE Capital & Estates meetings.
+Summarise the following transcript into concise bullet points, focusing on:
+- Key discussion points
+- Major decisions made
+- All action items (with responsible persons/roles and deadlines, if mentioned)
+
+Be succinct, avoid repetition, and use bullet points.
+
+Transcript:
+---
+{st.session_state['transcript']}
+---
+"""
+                response = model.generate_content(prompt_keypoints, request_options={"timeout": 600})
+                st.session_state["keypoints_summary"] = response.text
+                st.success("Key points and action summary generated.")
+            except Exception as e:
+                st.error(f"An error occurred during key points summarisation: {e}")
+
+if "keypoints_summary" in st.session_state:
+    st.markdown("## 🔑 Key Points & Actions Summary")
+    st.text_area(
+        "Meeting Key Points & Actions:",
+        st.session_state["keypoints_summary"],
+        height=500,
+        key="keypoints_text_area"
+    )
+    st.download_button(
+        label="📥 Download Key Points & Actions (DOCX)",
+        data=create_keypoints_docx(st.session_state["keypoints_summary"]),
+        file_name=f"HSE_Meeting_KeyPoints_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        key="download_keypoints_docx"
+    )
 
 # --- DOCX Export Function for Minutes ---
 def create_docx(content, kind="minutes"):
