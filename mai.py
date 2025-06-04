@@ -108,6 +108,16 @@ Date: {preparation_date}
 """
     return template
 
+# --- Narrative DOCX Export ---
+def create_narrative_docx(narrative_text):
+    doc = Document()
+    doc.add_heading("HSE Capital & Estates Meeting – Meeting Summary", level=1)
+    doc.add_paragraph(narrative_text)
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output
+
 # --- Configure Gemini API ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -148,7 +158,7 @@ if not st.session_state.password_verified:
 # --- Sidebar ---
 with st.sidebar:
     st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=200, caption="HSE Logo")
-    st.title("📒 MAI Recap")
+    st.title("🩺 MAI Recap")
     if st.button("About this App", key="about_button_sidebar"):
         st.sidebar.info(
             "**MAI Recap** helps generate meeting minutes for the Health Service Executive (HSE). "
@@ -224,8 +234,8 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
             prompt = (
                 "You are an expert transcriptionist for HSE Capital & Estates meetings. "
                 "Transcribe the following meeting audio accurately. "
-                "Clearly label speakers if discernible (e.g., Speaker 1:, Chairperson:, Project Lead:). "
-                "If speakers are not clearly distinguishable, use generic labels like 'Speaker A:', 'Speaker B:'."
+                "For each speaker, if a name is mentioned, use their name (e.g., Chairperson:, John Smith:). "
+                "If not, label generically as Speaker 1:, Speaker 2:, etc., incrementing for each new unidentified voice. "
             )
             result = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
             transcript = result.text
@@ -323,12 +333,30 @@ Provide ONLY the JSON object in your response. Do not include any other text bef
                     st.session_state["minutes"] = minutes_text
                     st.success("Meeting minutes generated in HSE Capital & Estates format.")
 
+                # --- Generate Narrative Summary for Whole Meeting ---
+                prompt_narrative = f"""
+You are an AI assistant tasked with creating a professional, concise summary of a HSE Capital & Estates meeting.
+Based on the following transcript, write a coherent, narrative summary of the meeting.
+The summary should be well-organized, easy to read, and capture the main points, discussions, and outcomes.
+Clearly indicate who said what; if a speaker's name is not provided, use labels like "Speaker 1", "Speaker 2", etc.
+Do not include speaker labels unless essential for context.
+
+Transcript:
+---
+{current_transcript}
+---
+
+Narrative Summary:
+"""
+                response2 = model.generate_content(prompt_narrative, request_options={"timeout": 600})
+                st.session_state["narrative"] = response2.text
+
             except Exception as e:
                 st.error(f"An error occurred during summarization: {e}")
                 if "structured" in st.session_state:
                     del st.session_state["structured"]
 
-# --- DOCX Export Function ---
+# --- DOCX Export Function for Minutes ---
 def create_docx(content, kind="minutes"):
     doc = Document()
     if kind == "minutes":
@@ -362,6 +390,23 @@ if "minutes" in st.session_state:
         file_name=f"HSE_Capital_Estates_Minutes_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         key="download_minutes_docx"
+    )
+
+# --- Download Narrative Summary as DOCX ---
+if "narrative" in st.session_state:
+    st.markdown("## 📝 Download Meeting Summary")
+    st.text_area(
+        "Meeting Narrative Summary:",
+        st.session_state["narrative"],
+        height=600,
+        key="narrative_text_area"
+    )
+    st.download_button(
+        label="📥 Download Meeting Summary (DOCX)",
+        data=create_narrative_docx(st.session_state["narrative"]),
+        file_name=f"HSE_Meeting_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        key="download_narrative_docx"
     )
 
 # --- Footer ---
