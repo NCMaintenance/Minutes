@@ -2,7 +2,7 @@ import streamlit as st
 import google.generativeai as genai
 import json
 import os
-from datetime import datetime # Imported but not actively used
+from datetime import datetime
 from docx import Document
 import io
 import tempfile
@@ -10,21 +10,14 @@ import re
 
 # --- Utility to prettify keys ---
 def prettify_key(key):
-    """
-    Formats a string key for better display.
-    Replaces underscores with spaces, adds spaces before capital letters in camelCase,
-    title cases the string, and appends a colon.
-    Example: "patientName_detail" -> "Patient Name Detail:"
-    """
     key = key.replace('_', ' ')
-    key = re.sub(r'([a-z])([A-Z])', r'\1 \2', key) # Add space before capital letters
+    key = re.sub(r'([a-z])([A-Z])', r'\1 \2', key)
     return key.title() + ":"
 
 # --- Configure Gemini API ---
-# Ensure the API key is set in Streamlit secrets
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel(model_name='gemini-2.0-flash-exp') # Using a specific Gemini model
+    model = genai.GenerativeModel(model_name='gemini-2.0-flash-exp')
 except KeyError:
     st.error("GEMINI_API_KEY not found in Streamlit secrets. Please add it to continue.")
     st.stop()
@@ -32,36 +25,31 @@ except Exception as e:
     st.error(f"Error configuring Gemini API: {e}")
     st.stop()
 
-
 st.set_page_config(page_title="MAI Recap", layout="wide")
 
 # --- Password protection ---
-# Initialize session state for password verification if not already present
 if "password_verified" not in st.session_state:
     st.session_state.password_verified = False
 
-# If password is not verified, show password input
 if not st.session_state.password_verified:
     st.title("🔒 MAI Recap Access")
     st.warning("This application requires a password to proceed.")
     with st.form("password_form"):
         user_password = st.text_input("Enter password:", type="password", key="password_input")
         submit_button = st.form_submit_button("Submit")
-
         if submit_button:
             try:
-                # Retrieve the password from Streamlit secrets
                 expected_password = st.secrets["password"]
                 if user_password == expected_password:
                     st.session_state.password_verified = True
-                    st.rerun() # Rerun the script to show the main app
+                    st.rerun()
                 else:
                     st.error("Incorrect password. Please try again.")
             except KeyError:
                 st.error("Password not configured in Streamlit secrets. Please contact the administrator.")
             except Exception as e:
                 st.error(f"An error occurred during password verification: {e}")
-    st.stop() # Stop execution if password is not verified
+    st.stop()
 
 # --- Sidebar ---
 with st.sidebar:
@@ -76,7 +64,6 @@ with st.sidebar:
         st.sidebar.write("This application's intellectual property belongs to Dave Maher.")
     st.markdown("---")
     st.markdown("Version: 1.0.0")
-
 
 # --- Main UI Header ---
 col1, col2 = st.columns([1, 6])
@@ -97,50 +84,26 @@ mode = st.radio(
 )
 
 audio_bytes = None
-# Note: audio_format is declared but its value might need to be dynamic based on uploaded file type
-# For recording, it's often WAV. For uploads, it can vary.
-# The st.audio component handles format detection for display.
 
 if mode == "Upload audio file":
     uploaded_audio = st.file_uploader(
         "Upload an audio file (WAV, MP3, M4A, OGG, FLAC)",
-        type=["wav", "mp3", "m4a", "ogg", "flac"], # Added more common audio types
+        type=["wav", "mp3", "m4a", "ogg", "flac"],
         key="audio_uploader"
     )
     if uploaded_audio:
-        st.audio(uploaded_audio) # Let st.audio handle format for playback
-        audio_bytes = uploaded_audio # Keep as file-like object for now
+        st.audio(uploaded_audio)
+        audio_bytes = uploaded_audio
 
 elif mode == "Record using microphone":
-    # Streamlit's native audio recorder component
-    # This component was experimental and its availability/API might change.
-    # Using st.audio with type="bytes" for recording if available,
-    # otherwise, this part might need a third-party component or updated Streamlit feature.
-    # For now, assuming a hypothetical st.audio_recorder or similar.
-    # The original code used `st.audio_input` which is not a standard Streamlit component.
-    # Let's use a placeholder or a more common approach if st.audio_input is custom.
-    # For demonstration, let's assume we get bytes from a recorder.
-    # If using a library like `st_audiorec`, the usage would be different.
-    # Given the original code's `st.audio_input`, it might be a custom component.
-    # For robustness, we'll check if `st.audio_recorder` exists, else provide a message.
-
-    if hasattr(st, "audio_recorder"): # Check if a built-in recorder exists
-        recorded_audio_bytes = st.audio_recorder(
-            text="🎙️ Click to record, click again to stop",
-            icon_size="2x",
-            key="audio_recorder_main"
-        )
-        if recorded_audio_bytes:
-            st.audio(recorded_audio_bytes, format="audio/wav")
-            audio_bytes = recorded_audio_bytes # Store as bytes
+    # Streamlit >=1.32.0 supports st.audio_input. If not available, fallback to info.
+    if hasattr(st, "audio_input"):
+        recorded_audio = st.audio_input("🎙️ Click the microphone to record, then click again to stop and process.", key="audio_recorder_main")
+        if recorded_audio:
+            st.audio(recorded_audio, format="audio/wav")
+            audio_bytes = recorded_audio
     else:
-        st.info("Audio recording functionality might require a specific Streamlit version or a custom component (`st.audio_input` was used in the original script).")
-        # Fallback if no recorder is available or for older Streamlit versions:
-        # recorded_audio = st.file_uploader("Upload a recording (WAV)", type=["wav"])
-        # if recorded_audio:
-        #     st.audio(recorded_audio, format="audio/wav")
-        #     audio_bytes = recorded_audio
-
+        st.info("Audio recording requires Streamlit 1.32.0+ for st.audio_input. Please update your Streamlit package for direct microphone recording.")
 
 # --- Transcription and Analysis ---
 if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button"):
@@ -148,31 +111,23 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
         # If uploaded_audio is a file uploader object, read its bytes
         if hasattr(audio_bytes, "read") and callable(audio_bytes.read):
             audio_data_bytes = audio_bytes.read()
-        elif isinstance(audio_bytes, bytes): # If it's already bytes (e.g., from recorder)
+        elif isinstance(audio_bytes, bytes):
             audio_data_bytes = audio_bytes
         else:
             st.error("Could not read audio data. Please try uploading/recording again.")
             st.stop()
 
-        # Use a temporary file to upload to Gemini API
-        # Gemini API typically requires a file path or publicly accessible URI for `upload_file`
-        # Suffix should ideally match the actual audio format, but .wav is often a safe bet for processing
-        # For more robust handling, detect original format or convert.
-        # Assuming WAV for simplicity here as Gemini often handles various inputs if not specified.
         temp_file_suffix = ".wav"
         if hasattr(audio_bytes, 'name') and isinstance(audio_bytes.name, str):
             original_extension = os.path.splitext(audio_bytes.name)[1].lower()
             if original_extension in ['.mp3', '.m4a', '.ogg', '.flac']:
                 temp_file_suffix = original_extension
-                # Note: Gemini might prefer certain formats or handle conversion.
-                # If specific conversion is needed, libraries like pydub would be used here.
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=temp_file_suffix) as tmp_file:
             tmp_file.write(audio_data_bytes)
             tmp_file_path = tmp_file.name
         try:
             st.info(f"Uploading audio to Gemini for processing (size: {len(audio_data_bytes) / (1024*1024):.2f} MB)...")
-            # The display_name is optional but good for tracking in Gemini console
             audio_file_display_name = f"MAI_Recap_Audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             audio_file = genai.upload_file(path=tmp_file_path, display_name=audio_file_display_name)
             st.success(f"Audio uploaded successfully: {audio_file.name}")
@@ -183,30 +138,28 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
                 "Clearly label speakers if discernible (e.g., Speaker 1:, Dr. Smith:, Nurse Jones:). "
                 "If speakers are not clearly distinguishable, use generic labels like 'Speaker A:', 'Speaker B:'."
             )
-            # Increased timeout for potentially long audio files
-            result = model.generate_content([prompt, audio_file], request_options={"timeout": 1200}) # 20 minutes
+            result = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
             transcript = result.text
             st.session_state["transcript"] = transcript
             st.success("Transcript generated successfully.")
 
         except Exception as e:
             st.error(f"An error occurred during transcription: {e}")
-            if 'audio_file' in locals() and audio_file: # Clean up uploaded file if error occurs after upload
+            if 'audio_file' in locals() and audio_file:
                 try:
                     genai.delete_file(audio_file.name)
                     st.info(f"Cleaned up uploaded file: {audio_file.name}")
                 except Exception as del_e:
                     st.warning(f"Could not delete uploaded file {audio_file.name} from Gemini: {del_e}")
         finally:
-            if 'audio_file' in locals() and audio_file: # Ensure file is deleted from Gemini after processing
+            if 'audio_file' in locals() and audio_file:
                  try:
                     genai.delete_file(audio_file.name)
                     st.info(f"Processed and deleted uploaded file: {audio_file.name} from Gemini.")
                  except Exception as del_e:
                     st.warning(f"Could not delete uploaded file {audio_file.name} from Gemini: {del_e}")
-            if os.path.exists(tmp_file_path): # Delete local temporary file
+            if os.path.exists(tmp_file_path):
                 os.remove(tmp_file_path)
-
 
 # --- Display Transcript ---
 if "transcript" in st.session_state:
@@ -218,8 +171,6 @@ if "transcript" in st.session_state:
             try:
                 current_transcript = st.session_state['transcript']
                 # --- Structured Summary ---
-                # This prompt is quite specific. The model's ability to follow this structure perfectly
-                # depends on its training and the clarity of the transcript.
                 prompt_structured = f"""
 You are an AI assistant for Health Service Executive (HSE) meetings.
 Your task is to extract detailed, structured information from the provided meeting transcript.
@@ -256,7 +207,6 @@ Transcript:
 Provide ONLY the JSON object in your response. Do not include any other text before or after the JSON.
 """
                 response1 = model.generate_content(prompt_structured, request_options={"timeout": 600})
-                # Robust JSON extraction: find content between ```json and ``` or just { and }
                 json_text_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response1.text, re.DOTALL)
 
                 if json_text_match:
@@ -268,14 +218,12 @@ Provide ONLY the JSON object in your response. Do not include any other text bef
                         st.error(f"❌ JSON found but failed to parse. Error: {e}")
                         st.error("Problematic JSON content received from Gemini:")
                         st.code(json_str.strip(), language="json")
-                        # Optionally, try to get Gemini to fix it or use a fallback
                         st.session_state["structured"] = {"error": "Failed to parse structured summary from Gemini.", "raw_response": json_str.strip()}
                 else:
                     st.error("❌ No valid JSON object found in Gemini's response for structured summary.")
                     st.info("Gemini's raw response for structured summary:")
                     st.code(response1.text)
                     st.session_state["structured"] = {"error": "No JSON object found in structured summary response.", "raw_response": response1.text}
-
 
                 # --- Narrative Summary ---
                 prompt_narrative = f"""
@@ -318,85 +266,73 @@ Brief HSE-Style Summary (Decisions & Actions):
 
             except Exception as e:
                 st.error(f"An error occurred during summarization: {e}")
-                # Clean up session state for summaries if an error occurs
                 for key in ["structured", "narrative", "brief"]:
                     if key in st.session_state:
                         del st.session_state[key]
 
 # --- DOCX Export Function ---
 def create_docx(content, kind="structured"):
-    """
-    Creates a DOCX file from the provided content.
-    'content' can be a dictionary (for structured) or string (for narrative/brief).
-    'kind' specifies the type of summary to format the document accordingly.
-    """
     doc = Document()
-    doc.add_heading(f"MAI Recap - {datetime.now().strftime('%Y-%m-%d %H:%M')}", level=0) # Overall document title
-
+    doc.add_heading(f"MAI Recap - {datetime.now().strftime('%Y-%m-%d %H:%M')}", level=0)
     if kind == "structured":
         doc.add_heading("Health Service Executive (HSE) – Detailed Meeting Minutes", level=1)
         if isinstance(content, dict):
             for key, val in content.items():
                 doc.add_heading(prettify_key(key), level=2)
                 if isinstance(val, list):
-                    if all(isinstance(item, dict) for item in val): # Handle list of dictionaries (e.g., actionItems)
+                    if all(isinstance(item, dict) for item in val):
                         for item_dict in val:
                             for sub_key, sub_val in item_dict.items():
                                 doc.add_paragraph(f"{sub_key.title()}: {sub_val}", style='ListBullet')
-                            doc.add_paragraph() # Add a small space between list items
-                    else: # Handle list of strings or other primitives
+                            doc.add_paragraph()
+                    else:
                         for item in val:
                             doc.add_paragraph(str(item), style='ListBullet')
-                elif isinstance(val, dict): # Handle nested dictionaries
-                     for sub_key, sub_val in val.items():
+                elif isinstance(val, dict):
+                    for sub_key, sub_val in val.items():
                         doc.add_paragraph(f"{prettify_key(sub_key)} {sub_val}")
                 else:
                     doc.add_paragraph(str(val) if val is not None else "Not mentioned")
         else:
             doc.add_paragraph("Error: Structured content is not in the expected format (dictionary).")
             doc.add_paragraph(str(content))
-
     elif kind == "brief":
         doc.add_heading("HSE Brief Summary – Key Decisions & Action Items", level=1)
         doc.add_paragraph(str(content))
-    else: # Default to narrative
+    else:
         doc.add_heading("Narrative Recap – HSE Meeting Summary", level=1)
         doc.add_paragraph(str(content))
-
-    # Save to a BytesIO object to be used by st.download_button
     output = io.BytesIO()
     doc.save(output)
-    output.seek(0) # Rewind the buffer to the beginning
+    output.seek(0)
     return output
 
 # --- Display Summaries and Downloads ---
-# Check if all summaries are available to avoid partial display issues
 if "structured" in st.session_state and "narrative" in st.session_state and "brief" in st.session_state:
-    st.markdown("---") # Separator
+    st.markdown("---")
     st.markdown("## 📑 Summaries & Downloads")
 
-    # --- Structured Summary Display ---
     st.markdown("### Detailed Structured Summary")
     structured_summary_data = st.session_state["structured"]
     if isinstance(structured_summary_data, dict) and "error" not in structured_summary_data:
         for k, v in structured_summary_data.items():
             st.markdown(f"**{prettify_key(k)}**")
             if isinstance(v, list):
-                if all(isinstance(item, dict) for item in v): # e.g. action items
+                if all(isinstance(item, dict) for item in v):
                     for item_dict in v:
-                        with st.container(): # Group related items
+                        with st.container():
                             for sub_key, sub_val in item_dict.items():
                                 st.markdown(f"  - {sub_key.title()}: {sub_val}")
-                            st.markdown("") # Small space
+                            st.markdown("")
                 else:
                     for item in v:
                         st.markdown(f"- {item}")
-            elif isinstance(v, dict): # Nested dictionary
+            elif isinstance(v, dict):
                  for sub_key, sub_val in v.items():
                     st.markdown(f"  - **{prettify_key(sub_key)}** {sub_val}")
             else:
                 st.markdown(f"{v}")
-            st.markdown("---") # Separator between fields
+            st.markdown("---")
 
         st.download_button(
             label="📥 Download Structured Summary (DOCX)",
@@ -412,11 +348,9 @@ if "structured" in st.session_state and "narrative" in st.session_state and "bri
     else:
          st.warning("Structured summary is not in the expected format or is missing.")
 
-
     st.markdown("---")
-    # --- Narrative Recap Display ---
     st.markdown("### 🧑‍⚕️ Narrative Recap")
-    st.markdown(st.session_state["narrative"]) # Use markdown for better formatting if narrative contains it
+    st.markdown(st.session_state["narrative"])
     st.download_button(
         label="📥 Download Narrative Summary (DOCX)",
         data=create_docx(st.session_state["narrative"], "narrative"),
@@ -426,9 +360,8 @@ if "structured" in st.session_state and "narrative" in st.session_state and "bri
     )
 
     st.markdown("---")
-    # --- Brief Summary Display ---
     st.markdown("### 🧾 Brief Summary (Decisions & Actions Only)")
-    st.markdown(st.session_state["brief"]) # Use markdown for better formatting
+    st.markdown(st.session_state["brief"])
     st.download_button(
         label="📥 Download Brief Summary (DOCX)",
         data=create_docx(st.session_state["brief"], "brief"),
