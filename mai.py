@@ -14,6 +14,100 @@ def prettify_key(key):
     key = re.sub(r'([a-z])([A-Z])', r'\1 \2', key)
     return key.title() + ":"
 
+# --- HSE Capital & Estates Minutes Generator ---
+def generate_capital_estates_minutes(structured):
+    now = datetime.now()
+    # Helper to get value or fallback
+    def get(val, default="Not mentioned"):
+        return val if val and val != "Not mentioned" else default
+
+    # Helper for bullets
+    def bullets(val):
+        if isinstance(val, list) and val:
+            return "".join([f"• {item}\n" for item in val])
+        elif isinstance(val, str) and val.strip():
+            return f"• {val}\n"
+        else:
+            return "Not mentioned\n"
+
+    # Fields mapping and fallback
+    meeting_title = get(structured.get("meetingTitle"), "Capital & Estates Meeting")
+    meeting_date = get(structured.get("meetingDate"), now.strftime("%d/%m/%Y"))
+    start_time = get(structured.get("startTime"), now.strftime("%H:%M"))
+    end_time = get(structured.get("endTime"), now.strftime("%H:%M"))
+    location = get(structured.get("location"))
+    chairperson = get(structured.get("chairperson"))
+    minute_taker = get(structured.get("minuteTaker"))
+    attendees = structured.get("attendees", [])
+    apologies = structured.get("apologies", [])
+    previous_meeting_date = get(structured.get("previousMeetingDate"))
+    matters_arising = structured.get("mattersArising", [])
+    declarations_of_interest = get(structured.get("declarationsOfInterest"), "None declared.")
+    major_projects = structured.get("majorProjects", [])
+    minor_projects = structured.get("minorProjects", [])
+    estates_strategy = structured.get("estatesStrategy", [])
+    health_safety = structured.get("healthSafety", [])
+    risk_register = structured.get("riskRegister", [])
+    finance_update = structured.get("financeUpdate", [])
+    aob = structured.get("aob", [])
+    next_meeting_date = get(structured.get("nextMeetingDate"))
+    meeting_closed_time = get(structured.get("meetingClosedTime"), end_time)
+    minutes_prepared_by = get(structured.get("minutesPreparedBy"), minute_taker or "Not mentioned")
+    preparation_date = get(structured.get("preparationDate"), now.strftime("%d/%m/%Y"))
+
+    # Compose the minutes
+    template = f"""HSE Capital & Estates Meeting Minutes
+Meeting Title: {meeting_title}
+Date: {meeting_date}
+Time: {start_time} - {end_time}
+Location: {location}
+Chairperson: {chairperson}
+Minute Taker: {minute_taker}
+________________________________________
+1. Attendance
+Present:
+{bullets(attendees)}
+Apologies:
+{bullets(apologies)}
+________________________________________
+2. Minutes of Previous Meeting
+• Confirmation of previous meeting minutes held on {previous_meeting_date}.
+• Matters Arising:
+{bullets(matters_arising)}
+________________________________________
+3. Declarations of Interest
+• {declarations_of_interest}
+________________________________________
+4. Capital Projects Update
+4.1 Major Projects (over €X million)
+{bullets(major_projects)}
+4.2 Minor Works / Equipment / ICT Projects
+{bullets(minor_projects)}
+________________________________________
+5. Estates Strategy and Planning
+{bullets(estates_strategy)}
+________________________________________
+6. Health & Safety / Regulatory Compliance
+{bullets(health_safety)}
+________________________________________
+7. Risk Register
+{bullets(risk_register)}
+________________________________________
+8. Finance Update
+{bullets(finance_update)}
+________________________________________
+9. AOB (Any Other Business)
+{bullets(aob)}
+________________________________________
+10. Date of Next Meeting
+• {next_meeting_date}
+________________________________________
+Meeting Closed at: {meeting_closed_time}
+Minutes Prepared by: {minutes_prepared_by}
+Date: {preparation_date}
+"""
+    return template
+
 # --- Configure Gemini API ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
@@ -96,7 +190,6 @@ if mode == "Upload audio file":
         audio_bytes = uploaded_audio
 
 elif mode == "Record using microphone":
-    # Use Streamlit's built-in audio_input (Streamlit >= 1.32.0)
     recorded_audio = st.audio_input("🎙️ Click the microphone to record, then click again to stop and process.", key="audio_recorder_main")
     if recorded_audio:
         st.audio(recorded_audio, format="audio/wav")
@@ -105,7 +198,6 @@ elif mode == "Record using microphone":
 # --- Transcription and Analysis ---
 if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button"):
     with st.spinner("Processing with Gemini... This may take a few minutes for longer audio."):
-        # If uploaded_audio is a file uploader object, read its bytes
         if hasattr(audio_bytes, "read") and callable(audio_bytes.read):
             audio_data_bytes = audio_bytes.read()
         elif isinstance(audio_bytes, bytes):
@@ -130,9 +222,9 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
             st.success(f"Audio uploaded successfully: {audio_file.name}")
 
             prompt = (
-                "You are an expert transcriptionist specializing in medical meetings. "
+                "You are an expert transcriptionist for HSE Capital & Estates meetings. "
                 "Transcribe the following meeting audio accurately. "
-                "Clearly label speakers if discernible (e.g., Speaker 1:, Dr. Smith:, Nurse Jones:). "
+                "Clearly label speakers if discernible (e.g., Speaker 1:, Chairperson:, Project Lead:). "
                 "If speakers are not clearly distinguishable, use generic labels like 'Speaker A:', 'Speaker B:'."
             )
             result = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
@@ -158,43 +250,46 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
             if os.path.exists(tmp_file_path):
                 os.remove(tmp_file_path)
 
-# --- Display Transcript ---
+# --- Display Transcript and Generate Minutes ---
 if "transcript" in st.session_state:
     st.markdown("## 📄 Transcript")
     st.text_area("Full Meeting Transcript:", st.session_state["transcript"], height=300, key="transcript_display_area")
 
-    if st.button("📊 Summarise Transcript", key="summarise_button"):
-        with st.spinner("Generating structured, narrative, and brief summaries... This may take a moment."):
+    if st.button("📊 Extract & Format Meeting Minutes", key="summarise_button"):
+        with st.spinner("Generating structured meeting minutes..."):
             try:
                 current_transcript = st.session_state['transcript']
-                # --- Structured Summary ---
+                # --- Structured Summary, Capital & Estates ---
                 prompt_structured = f"""
-You are an AI assistant for Health Service Executive (HSE) meetings.
-Your task is to extract detailed, structured information from the provided meeting transcript.
-Format the output as a single, valid JSON object.
-The JSON object should include the following keys. If a piece of information is not mentioned in the transcript, use the string "Not mentioned".
+You are an AI assistant for Health Service Executive (HSE) Capital & Estates meetings.
+Your task is to extract detailed, structured information from the provided meeting transcript and return a JSON object matching the following keys.
+Format all dates as DD/MM/YYYY and all times as HH:MM (24 hour).
+If a key is not mentioned, use "Not mentioned" or an empty list if appropriate.
 
 Keys to include:
-- "meetingTitle": (e.g., "Patient Case Review - John Doe")
-- "meetingDate": (e.g., "YYYY-MM-DD", if mentioned, otherwise "Not mentioned")
-- "attendees": (List of strings, e.g., ["Dr. Smith", "Nurse Jones"], or "Not mentioned")
-- "patientName": (If applicable, otherwise "Not applicable" or "Not mentioned")
-- "dateOfVisit": (If applicable, e.g., "YYYY-MM-DD", otherwise "Not applicable" or "Not mentioned")
-- "chiefComplaint": (Patient's main reason for visit, if applicable)
-- "historyPresentIllness": (Detailed history of current issues, if applicable)
-- "pastMedicalHistory": (Relevant past medical conditions, if applicable)
-- "medications": (List of current medications, if applicable)
-- "allergies": (List of allergies, if applicable)
-- "reviewOfSystems": (Systematic review of body systems, if applicable)
-- "physicalExamFindings": (Key findings from physical examination, if applicable)
-- "assessmentAndDiagnosis": (Assessment of the situation and any diagnoses made)
-- "planOfAction": (Specific steps to be taken, treatments, referrals)
-- "keyDecisionsMade": (List of important decisions)
-- "actionItems": (List of objects, each with "task" and "assignedTo" and "dueDate" if mentioned, e.g., [{{"task": "Schedule follow-up", "assignedTo": "Admin", "dueDate": "YYYY-MM-DD"}}])
-- "followUpInstructions": (Instructions for follow-up care or next steps)
-- "discussionPoints": (List of main topics discussed)
-- "questionsRaised": (List of significant questions asked during the meeting)
-- "resolutionsReached": (List of how issues or questions were resolved)
+- meetingTitle
+- meetingDate
+- startTime
+- endTime
+- location
+- chairperson
+- minuteTaker
+- attendees (list)
+- apologies (list)
+- previousMeetingDate
+- mattersArising (list)
+- declarationsOfInterest
+- majorProjects (list)
+- minorProjects (list)
+- estatesStrategy (list)
+- healthSafety (list)
+- riskRegister (list)
+- financeUpdate (list)
+- aob (list)
+- nextMeetingDate
+- meetingClosedTime
+- minutesPreparedBy
+- preparationDate
 
 Transcript:
 ---
@@ -222,156 +317,58 @@ Provide ONLY the JSON object in your response. Do not include any other text bef
                     st.code(response1.text)
                     st.session_state["structured"] = {"error": "No JSON object found in structured summary response.", "raw_response": response1.text}
 
-                # --- Narrative Summary ---
-                prompt_narrative = f"""
-You are an AI assistant tasked with creating a professional meeting summary.
-Based on the following transcript, write a coherent, narrative summary of the meeting.
-The summary should be well-organized, easy to read, and capture the main points, discussions, and outcomes.
-Maintain a formal and objective tone suitable for HSE meeting minutes.
-Do not include speaker labels unless essential for context.
-
-Transcript:
----
-{current_transcript}
----
-
-Narrative Summary:
-"""
-                response2 = model.generate_content(prompt_narrative, request_options={"timeout": 600})
-                narrative = response2.text
-                st.session_state["narrative"] = narrative
-
-                # --- Brief Summary ---
-                prompt_brief = f"""
-You are an AI assistant for the HSE.
-Summarise the key outcomes, decisions made, and critical action items from the following meeting transcript.
-The summary should be very concise, ideally under 200 words, in a bullet-point or short paragraph format.
-Focus strictly on actionable information and final decisions.
-
-Transcript:
----
-{current_transcript}
----
-
-Brief HSE-Style Summary (Decisions & Actions):
-"""
-                response3 = model.generate_content(prompt_brief, request_options={"timeout": 600})
-                brief_summary = response3.text
-                st.session_state["brief"] = brief_summary
-
-                st.success("All summaries generated successfully.")
+                # Generate formatted minutes
+                if "structured" in st.session_state and "error" not in st.session_state["structured"]:
+                    minutes_text = generate_capital_estates_minutes(st.session_state["structured"])
+                    st.session_state["minutes"] = minutes_text
+                    st.success("Meeting minutes generated in HSE Capital & Estates format.")
 
             except Exception as e:
                 st.error(f"An error occurred during summarization: {e}")
-                for key in ["structured", "narrative", "brief"]:
-                    if key in st.session_state:
-                        del st.session_state[key]
+                if "structured" in st.session_state:
+                    del st.session_state["structured"]
 
 # --- DOCX Export Function ---
-def create_docx(content, kind="structured"):
+def create_docx(content, kind="minutes"):
     doc = Document()
-    doc.add_heading(f"MAI Recap - {datetime.now().strftime('%Y-%m-%d %H:%M')}", level=0)
-    if kind == "structured":
-        doc.add_heading("Health Service Executive (HSE) – Detailed Meeting Minutes", level=1)
-        if isinstance(content, dict):
-            for key, val in content.items():
-                doc.add_heading(prettify_key(key), level=2)
-                if isinstance(val, list):
-                    if all(isinstance(item, dict) for item in val):
-                        for item_dict in val:
-                            for sub_key, sub_val in item_dict.items():
-                                doc.add_paragraph(f"{sub_key.title()}: {sub_val}", style='ListBullet')
-                            doc.add_paragraph()
-                    else:
-                        for item in val:
-                            doc.add_paragraph(str(item), style='ListBullet')
-                elif isinstance(val, dict):
-                    for sub_key, sub_val in val.items():
-                        doc.add_paragraph(f"{prettify_key(sub_key)} {sub_val}")
-                else:
-                    doc.add_paragraph(str(val) if val is not None else "Not mentioned")
-        else:
-            doc.add_paragraph("Error: Structured content is not in the expected format (dictionary).")
-            doc.add_paragraph(str(content))
-    elif kind == "brief":
-        doc.add_heading("HSE Brief Summary – Key Decisions & Action Items", level=1)
-        doc.add_paragraph(str(content))
+    if kind == "minutes":
+        for line in content.splitlines():
+            if line.strip(" _").endswith(":"):
+                doc.add_heading(line.strip(), level=2)
+            elif line.strip() == "________________________________________":
+                doc.add_paragraph("-" * 50)
+            elif line.strip():
+                doc.add_paragraph(line)
     else:
-        doc.add_heading("Narrative Recap – HSE Meeting Summary", level=1)
-        doc.add_paragraph(str(content))
+        doc.add_paragraph(content)
     output = io.BytesIO()
     doc.save(output)
     output.seek(0)
     return output
 
-# --- Display Summaries and Downloads ---
-if "structured" in st.session_state and "narrative" in st.session_state and "brief" in st.session_state:
+# --- Display Formatted Minutes and Download ---
+if "minutes" in st.session_state:
     st.markdown("---")
-    st.markdown("## 📑 Summaries & Downloads")
-
-    st.markdown("### Detailed Structured Summary")
-    structured_summary_data = st.session_state["structured"]
-    if isinstance(structured_summary_data, dict) and "error" not in structured_summary_data:
-        for k, v in structured_summary_data.items():
-            st.markdown(f"**{prettify_key(k)}**")
-            if isinstance(v, list):
-                if all(isinstance(item, dict) for item in v):
-                    for item_dict in v:
-                        with st.container():
-                            for sub_key, sub_val in item_dict.items():
-                                st.markdown(f"  - {sub_key.title()}: {sub_val}")
-                            st.markdown("")
-                else:
-                    for item in v:
-                        st.markdown(f"- {item}")
-            elif isinstance(v, dict):
-                 for sub_key, sub_val in v.items():
-                    st.markdown(f"  - **{prettify_key(sub_key)}** {sub_val}")
-            else:
-                st.markdown(f"{v}")
-            st.markdown("---")
-
-        st.download_button(
-            label="📥 Download Structured Summary (DOCX)",
-            data=create_docx(structured_summary_data, "structured"),
-            file_name=f"HSE_Structured_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            key="download_structured_docx"
-        )
-    elif isinstance(structured_summary_data, dict) and "error" in structured_summary_data:
-        st.error(f"Could not display structured summary: {structured_summary_data.get('error')}")
-        st.info("Raw response for structured summary (if available):")
-        st.code(structured_summary_data.get('raw_response', 'Not available'), language="text")
-    else:
-         st.warning("Structured summary is not in the expected format or is missing.")
-
-    st.markdown("---")
-    st.markdown("### 🧑‍⚕️ Narrative Recap")
-    st.markdown(st.session_state["narrative"])
-    st.download_button(
-        label="📥 Download Narrative Summary (DOCX)",
-        data=create_docx(st.session_state["narrative"], "narrative"),
-        file_name=f"HSE_Narrative_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        key="download_narrative_docx"
+    st.markdown("## 🏢 Capital & Estates Meeting Minutes (Draft)")
+    st.text_area(
+        "Drafted HSE Capital & Estates Meeting Minutes:",
+        st.session_state["minutes"],
+        height=900,
+        key="minutes_text_area"
     )
-
-    st.markdown("---")
-    st.markdown("### 🧾 Brief Summary (Decisions & Actions Only)")
-    st.markdown(st.session_state["brief"])
     st.download_button(
-        label="📥 Download Brief Summary (DOCX)",
-        data=create_docx(st.session_state["brief"], "brief"),
-        file_name=f"HSE_Brief_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
+        label="📥 Download Minutes (DOCX)",
+        data=create_docx(st.session_state["minutes"], kind="minutes"),
+        file_name=f"HSE_Capital_Estates_Minutes_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        key="download_brief_docx"
+        key="download_minutes_docx"
     )
 
 # --- Footer ---
 st.markdown("---")
 st.markdown(
     "**Disclaimer:** This implementation has been tested using sample data. "
-    "Adjustments may be required to ensure optimal performance and accuracy with real-world clinical meeting audio. "
-    "Always verify the accuracy of transcriptions and summaries."
+    "Adjustments may be required to ensure optimal performance and accuracy with real-world meeting audio. "
+    "Always verify the accuracy of transcriptions and minutes."
 )
 st.markdown("Created by Dave Maher | For HSE internal use.")
