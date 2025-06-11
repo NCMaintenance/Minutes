@@ -243,7 +243,7 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
 
             prompt = (
                 "You are an expert transcriptionist for HSE Capital & Estates meetings. "
-                "Transcribe the following meeting audio accurately. "
+                "Transcribe in uk English the following meeting audio accurately. "
                 "For each speaker, if a name is mentioned, use their name (e.g., Chairperson:, John Smith:). "
                 "If not, label generically as Speaker 1:, Speaker 2:, etc., incrementing for each new unidentified voice. "
             )
@@ -282,7 +282,7 @@ if "transcript" in st.session_state:
                 # --- Structured Summary, Capital & Estates ---
                 prompt_structured = f"""
 You are an AI assistant for Health Service Executive (HSE) Capital & Estates meetings.
-Your task is to extract detailed, structured information from the provided meeting transcript and return a JSON object matching the following keys.
+Your task is to extract detailed uk English, structured information from the provided meeting transcript and return a JSON object matching the following keys.
 Format all dates as DD/MM/YYYY and all times as HH:MM (24 hour).
 If a key is not mentioned, use "Not mentioned" or an empty list if appropriate.
 
@@ -345,7 +345,7 @@ Provide ONLY the JSON object in your response. Do not include any other text bef
 
                 # --- Generate Narrative Summary for Whole Meeting ---
                 prompt_narrative = f"""
-You are an AI assistant tasked with creating a professional, concise summary of a HSE Capital & Estates meeting.
+You are an AI assistant tasked with creating a professional, concise summary of a HSE Capital & Estates meeting in uk English.
 Based on the following transcript, write a coherent, narrative summary of the meeting.
 The summary should be well-organized, easy to read, and capture the main points, discussions, and outcomes.
 Clearly indicate who said what; if a speaker's name is not provided, use labels like "Speaker 1", "Speaker 2", etc.
