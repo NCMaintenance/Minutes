@@ -358,7 +358,7 @@ Transcript:
 
 Narrative Summary:
 """
-                response2 = model.generate_content(prompt_narrative, request_options={"timeout": 600})
+                response2 = model.generate_content(prompt_narrative, request_options={"timeout": 7200})
                 st.session_state["narrative"] = response2.text
 
             except Exception as e:
