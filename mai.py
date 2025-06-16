@@ -187,7 +187,7 @@ with col2:
     st.title("📝 MAI Recap")
     st.markdown("#### HSE Minute-AI (MAI) Generator")
 
-st.markdown("### 📤 Upload or Record Meeting Audio")
+st.markdown("### 📤 Record or Upload Meeting Audio")
 
 # --- Input Method Selection ---
 mode = st.radio(
