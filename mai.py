@@ -167,7 +167,7 @@ if not st.session_state.password_verified:
 
 # --- Sidebar ---
 with st.sidebar:
-    st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=200, caption="HSE Logo")
+    st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=200)
     st.title("📒 MAI Recap")
     if st.button("About this App", key="about_button_sidebar"):
         st.sidebar.info(
@@ -177,7 +177,7 @@ with st.sidebar:
     if st.button("Created by Dave Maher", key="creator_button_sidebar"):
         st.sidebar.write("This application's intellectual property belongs to Dave Maher.")
     st.markdown("---")
-    st.markdown("Version: 1.0.0")
+    st.markdown("Version: 1.1.0")
 
 # --- Main UI Header ---
 col1, col2 = st.columns([1, 6])
@@ -185,14 +185,14 @@ with col1:
     st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=80)
 with col2:
     st.title("📝 MAI Recap")
-    st.markdown("#### Health Service Executive (HSE) Minutes Generator")
+    st.markdown("#### HSE Minute-AI (MAI) Generator")
 
 st.markdown("### 📤 Upload or Record Meeting Audio")
 
 # --- Input Method Selection ---
 mode = st.radio(
     "Choose input method:",
-    ["Upload audio file", "Record using microphone"],
+    ["Record using microphone","Upload audio file"],
     horizontal=True,
     key="input_mode_radio"
 )
