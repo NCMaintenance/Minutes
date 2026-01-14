@@ -212,32 +212,8 @@ with st.sidebar:
         st.sidebar.write("This application's intellectual property belongs to Dave Maher.")
     st.markdown("---")
     
-    # --- Model Debugger (Added from previous version) ---
-    with st.expander("🛠️ Debug: Available Models"):
-        if "GEMINI_API_KEY" in st.secrets:
-            try:
-                # Re-configure to ensure key is loaded for list_models
-                genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-                models = genai.list_models()
-                found_models = []
-                for m in models:
-                    if 'generateContent' in m.supported_generation_methods:
-                        found_models.append(m.name.replace('models/', ''))
-                
-                if found_models:
-                    st.write("Found the following models:")
-                    for m_name in found_models:
-                        st.code(m_name)
-                    st.info("Copy one of these IDs into line 14 of the code if you wish to change the model.")
-                else:
-                    st.warning("No models found with generateContent support.")
-            except Exception as e:
-                st.error(f"Error listing models: {e}")
-        else:
-            st.warning("API Key not found.")
-
     st.markdown(f"Model: {GEMINI_MODEL_NAME}")
-    st.markdown("Version: 1.2.2 (HSE + Gemini Fix)")
+    st.markdown("Version: 1.2.3 (Bug Fixes)")
 
 # --- Main UI Header ---
 col1, col2 = st.columns([1, 6])
@@ -413,15 +389,24 @@ Provide ONLY the JSON object in your response. Do not include any other text bef
                 # Robust JSON parsing
                 try:
                     structured = json.loads(response1.text)
-                    st.session_state["structured"] = structured
                 except json.JSONDecodeError:
                     # Fallback regex extraction if raw text returned
                     json_text_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response1.text, re.DOTALL)
                     if json_text_match:
                         json_str = json_text_match.group(1) or json_text_match.group(2)
-                        st.session_state["structured"] = json.loads(json_str.strip())
+                        structured = json.loads(json_str.strip())
                     else:
                         raise ValueError("No JSON found in response")
+
+                # FIX: Handle case where AI returns a list instead of a dictionary
+                if isinstance(structured, list):
+                    if len(structured) > 0 and isinstance(structured[0], dict):
+                        structured = structured[0]
+                    else:
+                        # If list is empty or doesn't contain a dict, default to empty dict
+                        structured = {}
+
+                st.session_state["structured"] = structured
 
                 # Generate formatted minutes
                 if "structured" in st.session_state:
