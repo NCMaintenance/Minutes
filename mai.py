@@ -9,9 +9,9 @@ import tempfile
 import re
 
 # --- Configuration ---
-# Update this string to the specific Gemini 3 model version you have access to
-# Common examples might be 'gemini-3.0-pro', 'gemini-3.0-flash', or a specific preview string.
-GEMINI_MODEL_NAME = 'gemini-3.0-pro' 
+# Update this string to the specific Gemini model version you have access to.
+# UPDATED: gemini-1.5-flash is deprecated. Switched to gemini-3-flash-preview.
+GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
 
 # --- Utility to prettify keys ---
 def prettify_key(key):
@@ -29,7 +29,9 @@ def generate_capital_estates_minutes(structured):
     # Helper for bullets
     def bullets(val):
         if isinstance(val, list) and val:
-            return "".join([f"• {item}\n" for item in val])
+            # Filter empty strings if any
+            valid_items = [v for v in val if v and str(v).strip()]
+            return "".join([f"• {item}\n" for item in valid_items])
         elif isinstance(val, str) and val.strip():
             return f"• {val}\n"
         else:
@@ -133,6 +135,24 @@ def create_keypoints_docx(text):
     output.seek(0)
     return output
 
+# --- DOCX Export Function for Minutes ---
+def create_docx(content, kind="minutes"):
+    doc = Document()
+    if kind == "minutes":
+        for line in content.splitlines():
+            if line.strip(" _").endswith(":"):
+                doc.add_heading(line.strip(), level=2)
+            elif line.strip() == "________________________________________":
+                doc.add_paragraph("-" * 50)
+            elif line.strip():
+                doc.add_paragraph(line)
+    else:
+        doc.add_paragraph(content)
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output
+
 # --- Configure Gemini API ---
 try:
     if "GEMINI_API_KEY" in st.secrets:
@@ -145,7 +165,7 @@ except Exception as e:
     st.error(f"Error configuring Gemini API: {e}")
     st.stop()
 
-st.set_page_config(page_title="MAI Recap", layout="wide")
+st.set_page_config(page_title="MAI Recap", layout="wide", page_icon="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png")
 
 # --- Password protection ---
 if "password_verified" not in st.session_state:
@@ -175,6 +195,14 @@ if not st.session_state.password_verified:
 with st.sidebar:
     st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=200)
     st.title("📒 MAI Recap")
+    
+    if st.button("🔄 Restart Session"):
+        keys_to_clear = ['transcript', 'structured', 'minutes', 'narrative', 'keypoints_summary']
+        for key in keys_to_clear:
+            if key in st.session_state:
+                del st.session_state[key]
+        st.rerun()
+
     if st.button("About this App", key="about_button_sidebar"):
         st.sidebar.info(
             "**MAI Recap** helps generate meeting minutes for the Health Service Executive (HSE). "
@@ -183,8 +211,33 @@ with st.sidebar:
     if st.button("Created by Dave Maher", key="creator_button_sidebar"):
         st.sidebar.write("This application's intellectual property belongs to Dave Maher.")
     st.markdown("---")
+    
+    # --- Model Debugger (Added from previous version) ---
+    with st.expander("🛠️ Debug: Available Models"):
+        if "GEMINI_API_KEY" in st.secrets:
+            try:
+                # Re-configure to ensure key is loaded for list_models
+                genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+                models = genai.list_models()
+                found_models = []
+                for m in models:
+                    if 'generateContent' in m.supported_generation_methods:
+                        found_models.append(m.name.replace('models/', ''))
+                
+                if found_models:
+                    st.write("Found the following models:")
+                    for m_name in found_models:
+                        st.code(m_name)
+                    st.info("Copy one of these IDs into line 14 of the code if you wish to change the model.")
+                else:
+                    st.warning("No models found with generateContent support.")
+            except Exception as e:
+                st.error(f"Error listing models: {e}")
+        else:
+            st.warning("API Key not found.")
+
     st.markdown(f"Model: {GEMINI_MODEL_NAME}")
-    st.markdown("Version: 1.2.0 (Gemini 3 Update)")
+    st.markdown("Version: 1.2.2 (HSE + Gemini Fix)")
 
 # --- Main UI Header ---
 col1, col2 = st.columns([1, 6])
@@ -217,6 +270,7 @@ if mode == "Upload audio file":
         audio_bytes = uploaded_audio
 
 elif mode == "Record using microphone":
+    st.info("Recording functionality may vary by browser. Please use the upload feature for best results.")
     recorded_audio = st.audio_input("🎙️ Click the microphone to record, then click again to stop and process.", key="audio_recorder_main")
     if recorded_audio:
         st.audio(recorded_audio, format="audio/wav")
@@ -285,7 +339,6 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
             if audio_file:
                 try:
                     genai.delete_file(audio_file.name)
-                    st.info(f"Cleaned up uploaded file: {audio_file.name}")
                 except Exception:
                     pass
         finally:
@@ -349,7 +402,6 @@ Transcript:
 Provide ONLY the JSON object in your response. Do not include any other text before or after the JSON.
 """
                 # Use generation config to enforce JSON if supported by the model
-                # Note: 'response_mime_type': 'application/json' is supported in Flash 1.5+, assuming 3.0 supports it too
                 generation_config = {"response_mime_type": "application/json"}
                 
                 response1 = model.generate_content(
@@ -439,24 +491,6 @@ if "keypoints_summary" in st.session_state:
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         key="download_keypoints_docx"
     )
-
-# --- DOCX Export Function for Minutes ---
-def create_docx(content, kind="minutes"):
-    doc = Document()
-    if kind == "minutes":
-        for line in content.splitlines():
-            if line.strip(" _").endswith(":"):
-                doc.add_heading(line.strip(), level=2)
-            elif line.strip() == "________________________________________":
-                doc.add_paragraph("-" * 50)
-            elif line.strip():
-                doc.add_paragraph(line)
-    else:
-        doc.add_paragraph(content)
-    output = io.BytesIO()
-    doc.save(output)
-    output.seek(0)
-    return output
 
 # --- Display Formatted Minutes and Download ---
 if "minutes" in st.session_state:
