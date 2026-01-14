@@ -8,6 +8,11 @@ import io
 import tempfile
 import re
 
+# --- Configuration ---
+# Update this string to the specific Gemini 3 model version you have access to
+# Common examples might be 'gemini-3.0-pro', 'gemini-3.0-flash', or a specific preview string.
+GEMINI_MODEL_NAME = 'gemini-3.0-pro' 
+
 # --- Utility to prettify keys ---
 def prettify_key(key):
     key = key.replace('_', ' ')
@@ -130,11 +135,12 @@ def create_keypoints_docx(text):
 
 # --- Configure Gemini API ---
 try:
-    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel(model_name='gemini-2.0-flash-exp')
-except KeyError:
-    st.error("GEMINI_API_KEY not found in Streamlit secrets. Please add it to continue.")
-    st.stop()
+    if "GEMINI_API_KEY" in st.secrets:
+        genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+        model = genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
+    else:
+        st.error("GEMINI_API_KEY not found in Streamlit secrets.")
+        st.stop()
 except Exception as e:
     st.error(f"Error configuring Gemini API: {e}")
     st.stop()
@@ -153,14 +159,14 @@ if not st.session_state.password_verified:
         submit_button = st.form_submit_button("Submit")
         if submit_button:
             try:
-                expected_password = st.secrets["password"]
-                if user_password == expected_password:
+                expected_password = st.secrets.get("password")
+                if expected_password and user_password == expected_password:
                     st.session_state.password_verified = True
                     st.rerun()
+                elif not expected_password:
+                     st.error("Password not configured in secrets.toml.")
                 else:
                     st.error("Incorrect password. Please try again.")
-            except KeyError:
-                st.error("Password not configured in Streamlit secrets. Please contact the administrator.")
             except Exception as e:
                 st.error(f"An error occurred during password verification: {e}")
     st.stop()
@@ -177,7 +183,8 @@ with st.sidebar:
     if st.button("Created by Dave Maher", key="creator_button_sidebar"):
         st.sidebar.write("This application's intellectual property belongs to Dave Maher.")
     st.markdown("---")
-    st.markdown("Version: 1.1.0")
+    st.markdown(f"Model: {GEMINI_MODEL_NAME}")
+    st.markdown("Version: 1.2.0 (Gemini 3 Update)")
 
 # --- Main UI Header ---
 col1, col2 = st.columns([1, 6])
@@ -217,8 +224,11 @@ elif mode == "Record using microphone":
 
 # --- Transcription and Analysis ---
 if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button"):
-    with st.spinner("Processing with Gemini... This may take a few minutes for longer audio."):
+    with st.spinner(f"Processing with {GEMINI_MODEL_NAME}... This may take a few minutes for longer audio."):
+        
+        # Handle file data
         if hasattr(audio_bytes, "read") and callable(audio_bytes.read):
+            audio_bytes.seek(0) # Reset pointer
             audio_data_bytes = audio_bytes.read()
         elif isinstance(audio_bytes, bytes):
             audio_data_bytes = audio_bytes
@@ -226,27 +236,45 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
             st.error("Could not read audio data. Please try uploading/recording again.")
             st.stop()
 
+        # Determine extension
         temp_file_suffix = ".wav"
         if hasattr(audio_bytes, 'name') and isinstance(audio_bytes.name, str):
             original_extension = os.path.splitext(audio_bytes.name)[1].lower()
             if original_extension in ['.mp3', '.m4a', '.ogg', '.flac']:
                 temp_file_suffix = original_extension
 
+        # Save to temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix=temp_file_suffix) as tmp_file:
             tmp_file.write(audio_data_bytes)
             tmp_file_path = tmp_file.name
+        
+        audio_file = None
         try:
             st.info(f"Uploading audio to Gemini for processing (size: {len(audio_data_bytes) / (1024*1024):.2f} MB)...")
             audio_file_display_name = f"MAI_Recap_Audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # Upload to Gemini
             audio_file = genai.upload_file(path=tmp_file_path, display_name=audio_file_display_name)
+            
+            # Wait for processing to complete (important for large files)
+            while audio_file.state.name == "PROCESSING":
+                import time
+                time.sleep(2)
+                audio_file = genai.get_file(audio_file.name)
+            
+            if audio_file.state.name == "FAILED":
+                raise ValueError("Audio processing failed on Gemini side.")
+
             st.success(f"Audio uploaded successfully: {audio_file.name}")
 
             prompt = (
                 "You are an expert transcriptionist for HSE Capital & Estates meetings. "
-                "Transcribe in uk English the following meeting audio accurately. "
+                "Transcribe in UK English the following meeting audio accurately. "
                 "For each speaker, if a name is mentioned, use their name (e.g., Chairperson:, John Smith:). "
                 "If not, label generically as Speaker 1:, Speaker 2:, etc., incrementing for each new unidentified voice. "
             )
+            
+            # Generate Transcript
             result = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
             transcript = result.text
             st.session_state["transcript"] = transcript
@@ -254,19 +282,21 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
 
         except Exception as e:
             st.error(f"An error occurred during transcription: {e}")
-            if 'audio_file' in locals() and audio_file:
+            if audio_file:
                 try:
                     genai.delete_file(audio_file.name)
                     st.info(f"Cleaned up uploaded file: {audio_file.name}")
-                except Exception as del_e:
-                    st.warning(f"Could not delete uploaded file {audio_file.name} from Gemini: {del_e}")
+                except Exception:
+                    pass
         finally:
-            if 'audio_file' in locals() and audio_file:
+            # Cleanup Gemini file
+            if audio_file:
                  try:
                     genai.delete_file(audio_file.name)
                     st.info(f"Processed and deleted uploaded file: {audio_file.name} from Gemini.")
                  except Exception as del_e:
                     st.warning(f"Could not delete uploaded file {audio_file.name} from Gemini: {del_e}")
+            # Cleanup local temp file
             if os.path.exists(tmp_file_path):
                 os.remove(tmp_file_path)
 
@@ -282,7 +312,7 @@ if "transcript" in st.session_state:
                 # --- Structured Summary, Capital & Estates ---
                 prompt_structured = f"""
 You are an AI assistant for Health Service Executive (HSE) Capital & Estates meetings.
-Your task is to extract detailed uk English, structured information from the provided meeting transcript and return a JSON object matching the following keys.
+Your task is to extract detailed UK English, structured information from the provided meeting transcript and return a JSON object matching the following keys.
 Format all dates as DD/MM/YYYY and all times as HH:MM (24 hour).
 If a key is not mentioned, use "Not mentioned" or an empty list if appropriate.
 
@@ -318,34 +348,38 @@ Transcript:
 
 Provide ONLY the JSON object in your response. Do not include any other text before or after the JSON.
 """
-                response1 = model.generate_content(prompt_structured, request_options={"timeout": 600})
-                json_text_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response1.text, re.DOTALL)
-
-                if json_text_match:
-                    json_str = json_text_match.group(1) or json_text_match.group(2)
-                    try:
-                        structured = json.loads(json_str.strip())
-                        st.session_state["structured"] = structured
-                    except json.JSONDecodeError as e:
-                        st.error(f"❌ JSON found but failed to parse. Error: {e}")
-                        st.error("Problematic JSON content received from Gemini:")
-                        st.code(json_str.strip(), language="json")
-                        st.session_state["structured"] = {"error": "Failed to parse structured summary from Gemini.", "raw_response": json_str.strip()}
-                else:
-                    st.error("❌ No valid JSON object found in Gemini's response for structured summary.")
-                    st.info("Gemini's raw response for structured summary:")
-                    st.code(response1.text)
-                    st.session_state["structured"] = {"error": "No JSON object found in structured summary response.", "raw_response": response1.text}
+                # Use generation config to enforce JSON if supported by the model
+                # Note: 'response_mime_type': 'application/json' is supported in Flash 1.5+, assuming 3.0 supports it too
+                generation_config = {"response_mime_type": "application/json"}
+                
+                response1 = model.generate_content(
+                    prompt_structured, 
+                    generation_config=generation_config,
+                    request_options={"timeout": 600}
+                )
+                
+                # Robust JSON parsing
+                try:
+                    structured = json.loads(response1.text)
+                    st.session_state["structured"] = structured
+                except json.JSONDecodeError:
+                    # Fallback regex extraction if raw text returned
+                    json_text_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response1.text, re.DOTALL)
+                    if json_text_match:
+                        json_str = json_text_match.group(1) or json_text_match.group(2)
+                        st.session_state["structured"] = json.loads(json_str.strip())
+                    else:
+                        raise ValueError("No JSON found in response")
 
                 # Generate formatted minutes
-                if "structured" in st.session_state and "error" not in st.session_state["structured"]:
+                if "structured" in st.session_state:
                     minutes_text = generate_capital_estates_minutes(st.session_state["structured"])
                     st.session_state["minutes"] = minutes_text
                     st.success("Meeting minutes generated in HSE Capital & Estates format.")
 
                 # --- Generate Narrative Summary for Whole Meeting ---
                 prompt_narrative = f"""
-You are an AI assistant tasked with creating a professional, concise summary of a HSE Capital & Estates meeting in uk English.
+You are an AI assistant tasked with creating a professional, concise summary of a HSE Capital & Estates meeting in UK English.
 Based on the following transcript, write a coherent, narrative summary of the meeting.
 The summary should be well-organized, easy to read, and capture the main points, discussions, and outcomes.
 Clearly indicate who said what; if a speaker's name is not provided, use labels like "Speaker 1", "Speaker 2", etc.
@@ -358,13 +392,12 @@ Transcript:
 
 Narrative Summary:
 """
-                response2 = model.generate_content(prompt_narrative, request_options={"timeout": 7200})
+                response2 = model.generate_content(prompt_narrative, request_options={"timeout": 1200})
                 st.session_state["narrative"] = response2.text
 
             except Exception as e:
                 st.error(f"An error occurred during summarization: {e}")
-                if "structured" in st.session_state:
-                    del st.session_state["structured"]
+                st.error(f"Details: {str(e)}")
 
 # --- Key Points and Actions Summary ---
 if "transcript" in st.session_state and "minutes" in st.session_state:
