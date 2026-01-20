@@ -10,7 +10,6 @@ import re
 
 # --- Configuration ---
 # Update this string to the specific Gemini model version you have access to.
-# UPDATED: gemini-1.5-flash is deprecated. Switched to gemini-3-flash-preview.
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
 
 # --- Utility to prettify keys ---
@@ -184,7 +183,7 @@ if not st.session_state.password_verified:
                     st.session_state.password_verified = True
                     st.rerun()
                 elif not expected_password:
-                     st.error("Password not configured in secrets.toml.")
+                      st.error("Password not configured in secrets.toml.")
                 else:
                     st.error("Incorrect password. Please try again.")
             except Exception as e:
@@ -213,14 +212,16 @@ with st.sidebar:
     st.markdown("---")
     
     st.markdown(f"Model: {GEMINI_MODEL_NAME}")
-    st.markdown("Version: 1.2.3 (Bug Fixes)")
+    # UPDATED: Removed "(Bug Fixes)"
+    st.markdown("Version: 1.2.3")
 
 # --- Main UI Header ---
 col1, col2 = st.columns([1, 6])
 with col1:
     st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=80)
 with col2:
-    st.title("📝 MAI Recap")
+    # UPDATED: Removed "📝" emoji
+    st.title("MAI Recap")
     st.markdown("#### HSE Minute-AI (MAI) Generator")
 
 st.markdown("### 📤 Record or Upload Meeting Audio")
@@ -306,7 +307,16 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
             
             # Generate Transcript
             result = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
-            transcript = result.text
+            
+            # Robust text extraction to handle "no valid Part" errors
+            try:
+                transcript = result.text
+            except ValueError:
+                # Handle cases where the model returns no content
+                transcript = "(No transcript generated. The audio might be silent, or safety filters were triggered.)"
+                if result.candidates:
+                     st.warning(f"Model finish reason: {result.candidates[0].finish_reason}")
+            
             st.session_state["transcript"] = transcript
             st.success("Transcript generated successfully.")
 
@@ -388,15 +398,23 @@ Provide ONLY the JSON object in your response. Do not include any other text bef
                 
                 # Robust JSON parsing
                 try:
-                    structured = json.loads(response1.text)
+                    # Safely access text
+                    try:
+                        response_text = response1.text
+                    except ValueError:
+                        response_text = ""
+                    
+                    structured = json.loads(response_text)
                 except json.JSONDecodeError:
                     # Fallback regex extraction if raw text returned
-                    json_text_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response1.text, re.DOTALL)
+                    # Re-use safe response_text from above
+                    json_text_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response_text if 'response_text' in locals() else "", re.DOTALL)
                     if json_text_match:
                         json_str = json_text_match.group(1) or json_text_match.group(2)
                         structured = json.loads(json_str.strip())
                     else:
-                        raise ValueError("No JSON found in response")
+                        # Default to empty dict if JSON fails
+                        structured = {}
 
                 # FIX: Handle case where AI returns a list instead of a dictionary
                 if isinstance(structured, list):
@@ -430,7 +448,11 @@ Transcript:
 Narrative Summary:
 """
                 response2 = model.generate_content(prompt_narrative, request_options={"timeout": 1200})
-                st.session_state["narrative"] = response2.text
+                
+                try:
+                    st.session_state["narrative"] = response2.text
+                except ValueError:
+                    st.session_state["narrative"] = "Unable to generate narrative summary (Empty response from model)."
 
             except Exception as e:
                 st.error(f"An error occurred during summarization: {e}")
@@ -456,7 +478,12 @@ Transcript:
 ---
 """
                 response = model.generate_content(prompt_keypoints, request_options={"timeout": 600})
-                st.session_state["keypoints_summary"] = response.text
+                
+                try:
+                    st.session_state["keypoints_summary"] = response.text
+                except ValueError:
+                    st.session_state["keypoints_summary"] = "Unable to generate key points (Empty response from model)."
+
                 st.success("Key points and action summary generated.")
             except Exception as e:
                 st.error(f"An error occurred during key points summarisation: {e}")
