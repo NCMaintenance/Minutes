@@ -213,16 +213,19 @@ with st.sidebar:
     
     st.markdown(f"Model: {GEMINI_MODEL_NAME}")
     # UPDATED: Removed "(Bug Fixes)"
-    st.markdown("Version: 2.0")
+    st.markdown("Version: 1.2.3")
 
 # --- Main UI Header ---
-col1, col2 = st.columns([1, 6])
-with col1:
-    st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=80)
-with col2:
-    # UPDATED: Removed "📝" emoji
-    st.title("MAI Recap")
-    st.markdown("#### HSE Minute-AI (MAI) Generator")
+st.markdown(
+    """
+    <div style="display: flex; align-items: center;">
+        <img src="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png" width="80" style="margin-right: 15px;">
+        <h1 style="margin: 0; display: inline-block; vertical-align: middle;">MAI Recap</h1>
+    </div>
+    <h4 style="margin-top: 5px;">HSE Minute-AI (MAI) Generator</h4>
+    """,
+    unsafe_allow_html=True
+)
 
 st.markdown("### 📤 Record or Upload Meeting Audio")
 
