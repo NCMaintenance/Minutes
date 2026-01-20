@@ -220,7 +220,7 @@ st.markdown(
     """
     <div style="display: flex; align-items: center;">
         <img src="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png" width="80" style="margin-right: 15px;">
-        <h1 style="margin: 0; display: inline-block; vertical-align: middle; font-size: 3rem;">MAI Recap</h1>
+        <h1 style="margin: 0; display: inline-block; vertical-align: middle; font-size: 4rem;">MAI Recap</h1>
     </div>
     <h4 style="margin-top: 5px;">HSE Minute-AI (MAI) Generator</h4>
     """,
