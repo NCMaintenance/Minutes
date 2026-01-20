@@ -213,7 +213,7 @@ with st.sidebar:
     
     st.markdown(f"Model: {GEMINI_MODEL_NAME}")
     # UPDATED: Removed "(Bug Fixes)"
-    st.markdown("Version: 1.2.3")
+    st.markdown("Version: 2.0")
 
 # --- Main UI Header ---
 col1, col2 = st.columns([1, 6])
@@ -303,6 +303,8 @@ if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button
                 "Transcribe in UK English the following meeting audio accurately. "
                 "For each speaker, if a name is mentioned, use their name (e.g., Chairperson:, John Smith:). "
                 "If not, label generically as Speaker 1:, Speaker 2:, etc., incrementing for each new unidentified voice. "
+                "IMPORTANT: Output ONLY the transcript text. Do not include any conversational filler, introductory remarks, or sign-offs at the end. "
+                "Ensure all currency figures are transcribed with the Euro symbol (€)."
             )
             
             # Generate Transcript
@@ -353,6 +355,7 @@ if "transcript" in st.session_state:
 You are an AI assistant for Health Service Executive (HSE) Capital & Estates meetings.
 Your task is to extract detailed UK English, structured information from the provided meeting transcript and return a JSON object matching the following keys.
 Format all dates as DD/MM/YYYY and all times as HH:MM (24 hour).
+Ensure all currency values use the Euro symbol (€), not Pounds (£).
 If a key is not mentioned, use "Not mentioned" or an empty list if appropriate.
 
 Keys to include:
@@ -437,6 +440,7 @@ Provide ONLY the JSON object in your response. Do not include any other text bef
 You are an AI assistant tasked with creating a professional, concise summary of a HSE Capital & Estates meeting in UK English.
 Based on the following transcript, write a coherent, narrative summary of the meeting.
 The summary should be well-organized, easy to read, and capture the main points, discussions, and outcomes.
+Ensure all currency figures are formatted with the Euro symbol (€).
 Clearly indicate who said what; if a speaker's name is not provided, use labels like "Speaker 1", "Speaker 2", etc.
 Do not include speaker labels unless essential for context.
 
@@ -470,6 +474,7 @@ Summarise the following transcript into concise bullet points, focusing on:
 - Major decisions made
 - All action items (with responsible persons/roles and deadlines, if mentioned)
 
+Ensure all currency figures are formatted with the Euro symbol (€).
 Be succinct, avoid repetition, and use bullet points.
 
 Transcript:
