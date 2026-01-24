@@ -18,7 +18,24 @@ def prettify_key(key):
     key = re.sub(r'([a-z])([A-Z])', r'\1 \2', key)
     return key.title() + ":"
 
-# --- HSE Capital & Estates Minutes Generator (Your Custom Logic) ---
+# --- Safety Helper Function (New Fix) ---
+def get_gemini_text_safe(response):
+    """
+    Safely extracts text from a Gemini response. 
+    If blocked by safety filters or empty, returns a friendly error string.
+    """
+    try:
+        return response.text
+    except ValueError:
+        # This catches the error when response.text is accessed on a blocked candidate
+        error_msg = "⚠️ Model response was blocked or empty."
+        if hasattr(response, "candidates") and response.candidates:
+            finish_reason = response.candidates[0].finish_reason
+            error_msg += f" (Reason: {finish_reason})"
+            # If safety ratings exist, we could log them, but usually finish_reason is enough context
+        return error_msg
+
+# --- HSE Capital & Estates Minutes Generator ---
 def generate_capital_estates_minutes(structured):
     now = datetime.now()
     # Helper to get value or fallback
@@ -147,7 +164,7 @@ except Exception as e:
 
 st.set_page_config(page_title="MAI Recap Pro", layout="wide", page_icon="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png")
 
-# --- Custom CSS for Chat Interface & Tabs ---
+# --- Custom CSS ---
 st.markdown("""
 <style>
     .stChatInputContainer {
@@ -200,7 +217,6 @@ with st.sidebar:
     st.title("📒 MAI Recap")
     
     if st.button("🔄 Restart Session"):
-        # Clear session but keep password state
         for key in list(st.session_state.keys()):
             if key != 'password_verified':
                 del st.session_state[key]
@@ -211,14 +227,7 @@ with st.sidebar:
     
     st.markdown("---")
     st.markdown(f"**Model:** `{GEMINI_MODEL_NAME}`")
-    st.markdown("**Version:** 3.0 Pro")
-    
-    st.info(
-        "**Features Active:**\n"
-        "- 📑 **Formal Minutes**\n"
-        "- 🔍 **Smart Briefing**\n"
-        "- 💬 **Meeting Chatbot**"
-    )
+    st.markdown("**Version:** 3.1 Pro (Stable)")
 
 # --- Main UI Header ---
 st.markdown(
@@ -300,8 +309,14 @@ if "transcript" not in st.session_state:
                 )
                 res = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
                 
-                st.session_state["transcript"] = res.text
-                st.rerun()
+                # Use Safe Text Extraction
+                transcript_text = get_gemini_text_safe(res)
+                
+                if "⚠️" in transcript_text:
+                    st.error(f"Transcription failed: {transcript_text}")
+                else:
+                    st.session_state["transcript"] = transcript_text
+                    st.rerun()
 
             except Exception as e:
                 st.error(f"Error: {e}")
@@ -322,7 +337,7 @@ else:
     # Create the NotebookLM style tab layout
     tab1, tab2, tab3, tab4 = st.tabs(["📄 Minutes & Actions", "🔍 Briefing Overview", "💬 Chat with Meeting", "📝 Raw Transcript"])
 
-    # --- TAB 1: Minutes Generation (Original Functionality) ---
+    # --- TAB 1: Minutes Generation ---
     with tab1:
         st.header("Formal Minutes")
         
@@ -353,14 +368,21 @@ else:
                             generation_config={"response_mime_type": "application/json"},
                             request_options={"timeout": 600}
                         )
-                        structured = json.loads(res.text)
                         
-                        # Handle potential list wrapper
-                        if isinstance(structured, list): structured = structured[0]
+                        # Use Safe Extraction first
+                        text_response = get_gemini_text_safe(res)
                         
-                        st.session_state["structured"] = structured
-                        st.session_state["minutes"] = generate_capital_estates_minutes(structured)
-                        st.rerun()
+                        if "⚠️" in text_response:
+                            st.error(f"Generation blocked: {text_response}")
+                        else:
+                            structured = json.loads(text_response)
+                            # Handle potential list wrapper
+                            if isinstance(structured, list): structured = structured[0]
+                            
+                            st.session_state["structured"] = structured
+                            st.session_state["minutes"] = generate_capital_estates_minutes(structured)
+                            st.rerun()
+                            
                     except Exception as e:
                         st.error(f"Failed to generate minutes: {e}")
         
@@ -395,8 +417,15 @@ else:
                     {st.session_state['transcript']}
                     """
                     res = model.generate_content(prompt_overview)
-                    st.session_state["overview"] = res.text
-                    st.rerun()
+                    
+                    # FIX: Use safe extraction
+                    safe_overview = get_gemini_text_safe(res)
+                    
+                    if "⚠️" in safe_overview:
+                        st.error(safe_overview)
+                    else:
+                        st.session_state["overview"] = safe_overview
+                        st.rerun()
 
         if "overview" in st.session_state:
             st.markdown(st.session_state["overview"])
@@ -418,7 +447,7 @@ else:
                 st.markdown(msg["content"])
 
         # Chat Input
-        if prompt := st.chat_input("Ask about the meeting (e.g. 'What was the budget for X?')..."):
+        if prompt := st.chat_input("Ask about the meeting..."):
             # Add user message
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
@@ -443,9 +472,13 @@ else:
                     {prompt}
                     """
                     
-                    response = model.generate_content(chat_prompt)
-                    st.markdown(response.text)
-                    st.session_state.messages.append({"role": "assistant", "content": response.text})
+                    res = model.generate_content(chat_prompt)
+                    
+                    # FIX: Use safe extraction
+                    response_text = get_gemini_text_safe(res)
+                    
+                    st.markdown(response_text)
+                    st.session_state.messages.append({"role": "assistant", "content": response_text})
 
     # --- TAB 4: Raw Transcript ---
     with tab4:
