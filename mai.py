@@ -10,7 +10,7 @@ import re
 
 # --- Configuration ---
 # Update this string to the specific Gemini model version you have access to.
-GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
+GEMINI_MODEL_NAME = 'gemini-2.0-flash-exp'
 
 # --- Utility to prettify keys ---
 def prettify_key(key):
@@ -114,27 +114,7 @@ Date: {preparation_date}
 """
     return template
 
-# --- Narrative DOCX Export ---
-def create_narrative_docx(narrative_text):
-    doc = Document()
-    doc.add_heading("HSE Capital & Estates Meeting – Meeting Summary", level=1)
-    doc.add_paragraph(narrative_text)
-    output = io.BytesIO()
-    doc.save(output)
-    output.seek(0)
-    return output
-
-# --- Key Points Summary DOCX Export ---
-def create_keypoints_docx(text):
-    doc = Document()
-    doc.add_heading("HSE Capital & Estates Meeting – Key Points & Actions", level=1)
-    doc.add_paragraph(text)
-    output = io.BytesIO()
-    doc.save(output)
-    output.seek(0)
-    return output
-
-# --- DOCX Export Function for Minutes ---
+# --- DOCX Helpers ---
 def create_docx(content, kind="minutes"):
     doc = Document()
     if kind == "minutes":
@@ -146,6 +126,7 @@ def create_docx(content, kind="minutes"):
             elif line.strip():
                 doc.add_paragraph(line)
     else:
+        doc.add_heading("Meeting Export", level=1)
         doc.add_paragraph(content)
     output = io.BytesIO()
     doc.save(output)
@@ -164,7 +145,27 @@ except Exception as e:
     st.error(f"Error configuring Gemini API: {e}")
     st.stop()
 
-st.set_page_config(page_title="MAI Recap", layout="wide", page_icon="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png")
+st.set_page_config(page_title="MAI Recap Pro", layout="wide", page_icon="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png")
+
+# --- Custom CSS for Chat Interface ---
+st.markdown("""
+<style>
+    .stChatInputContainer {
+        padding-bottom: 20px;
+    }
+    .chat-message {
+        padding: 1.5rem; border-radius: 0.5rem; margin-bottom: 1rem; display: flex
+    }
+    .chat-message.user {
+        background-color: #2b313e;
+        border: 1px solid #4a4e59;
+    }
+    .chat-message.bot {
+        background-color: #1c1f26;
+        border: 1px solid #2e333d;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 # --- Password protection ---
 if "password_verified" not in st.session_state:
@@ -196,362 +197,202 @@ with st.sidebar:
     st.title("📒 MAI Recap")
     
     if st.button("🔄 Restart Session"):
-        keys_to_clear = ['transcript', 'structured', 'minutes', 'narrative', 'keypoints_summary']
-        for key in keys_to_clear:
-            if key in st.session_state:
-                del st.session_state[key]
+        st.session_state.clear()
+        st.session_state.password_verified = True # Keep logged in
         st.rerun()
 
-    if st.button("About this App", key="about_button_sidebar"):
-        st.sidebar.info(
-            "**MAI Recap** helps generate meeting minutes for the Health Service Executive (HSE). "
-            "Upload or record audio, and the app will transcribe and summarise it."
-        )
-    if st.button("Created by Dave Maher", key="creator_button_sidebar"):
-        st.sidebar.write("This application's intellectual property belongs to Dave Maher.")
     st.markdown("---")
+    st.markdown(f"**Model:** {GEMINI_MODEL_NAME}")
+    st.markdown("**Version:** 3.0 (Notebook Features)")
     
-    st.markdown(f"Model: {GEMINI_MODEL_NAME}")
-    # UPDATED: Version 2.0
-    st.markdown("Version: 2.0")
+    st.info(
+        "**New Features:**\n"
+        "- 💬 **Chat:** Ask questions about the meeting.\n"
+        "- 📖 **Overview:** Get a briefing doc style summary."
+    )
 
 # --- Main UI Header ---
 st.markdown(
     """
     <div style="display: flex; align-items: center;">
         <img src="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png" width="80" style="margin-right: 15px;">
-        <h1 style="margin: 0; display: inline-block; vertical-align: middle; font-size: 4rem;">MAI Recap</h1>
+        <h1 style="margin: 0; display: inline-block; vertical-align: middle;">MAI Recap</h1>
     </div>
     <h4 style="margin-top: 5px;">HSE Minute-AI (MAI) Generator</h4>
     """,
     unsafe_allow_html=True
 )
 
-st.markdown("### 📤 Record or Upload Meeting Audio")
+# --- Chat History Initialization ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# --- Input Method Selection ---
-mode = st.radio(
-    "Choose input method:",
-    ["Record using microphone","Upload audio file"],
-    horizontal=True,
-    key="input_mode_radio"
-)
+# --- Audio Input Section ---
+if "transcript" not in st.session_state:
+    st.markdown("### 1. Upload Meeting Audio")
+    
+    mode = st.radio("Input method:", ["Record Microphone", "Upload File"], horizontal=True)
+    audio_bytes = None
 
-audio_bytes = None
+    if mode == "Upload File":
+        uploaded_audio = st.file_uploader("Upload audio (WAV, MP3, M4A)", type=["wav", "mp3", "m4a", "ogg", "flac"])
+        if uploaded_audio:
+            st.audio(uploaded_audio)
+            audio_bytes = uploaded_audio
+    else:
+        recorded_audio = st.audio_input("Record audio")
+        if recorded_audio:
+            st.audio(recorded_audio)
+            audio_bytes = recorded_audio
 
-if mode == "Upload audio file":
-    uploaded_audio = st.file_uploader(
-        "Upload an audio file (WAV, MP3, M4A, OGG, FLAC)",
-        type=["wav", "mp3", "m4a", "ogg", "flac"],
-        key="audio_uploader"
-    )
-    if uploaded_audio:
-        st.audio(uploaded_audio)
-        audio_bytes = uploaded_audio
-
-elif mode == "Record using microphone":
-    st.info("Recording functionality may vary by browser. Please use the upload feature for best results.")
-    recorded_audio = st.audio_input("🎙️ Click the microphone to record, then click again to stop and process.", key="audio_recorder_main")
-    if recorded_audio:
-        st.audio(recorded_audio, format="audio/wav")
-        audio_bytes = recorded_audio
-
-# --- Transcription and Analysis ---
-if audio_bytes and st.button("🧠 Transcribe & Analyse", key="transcribe_button"):
-    with st.spinner(f"Processing with {GEMINI_MODEL_NAME}... This may take a few minutes for longer audio."):
-        
-        # Handle file data
-        if hasattr(audio_bytes, "read") and callable(audio_bytes.read):
-            audio_bytes.seek(0) # Reset pointer
-            audio_data_bytes = audio_bytes.read()
-        elif isinstance(audio_bytes, bytes):
-            audio_data_bytes = audio_bytes
-        else:
-            st.error("Could not read audio data. Please try uploading/recording again.")
-            st.stop()
-
-        # Determine extension
-        temp_file_suffix = ".wav"
-        if hasattr(audio_bytes, 'name') and isinstance(audio_bytes.name, str):
-            original_extension = os.path.splitext(audio_bytes.name)[1].lower()
-            if original_extension in ['.mp3', '.m4a', '.ogg', '.flac']:
-                temp_file_suffix = original_extension
-
-        # Save to temp file
-        with tempfile.NamedTemporaryFile(delete=False, suffix=temp_file_suffix) as tmp_file:
-            tmp_file.write(audio_data_bytes)
-            tmp_file_path = tmp_file.name
-        
-        audio_file = None
-        try:
-            st.info(f"Uploading audio to Gemini for processing (size: {len(audio_data_bytes) / (1024*1024):.2f} MB)...")
-            audio_file_display_name = f"MAI_Recap_Audio_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    if audio_bytes and st.button("🧠 Transcribe & Analyse"):
+        with st.spinner("Processing audio... This may take a moment."):
+            # Save to temp
+            if hasattr(audio_bytes, "read"): audio_bytes.seek(0); data = audio_bytes.read()
+            else: data = audio_bytes
             
-            # Upload to Gemini
-            audio_file = genai.upload_file(path=tmp_file_path, display_name=audio_file_display_name)
-            
-            # Wait for processing to complete (important for large files)
-            while audio_file.state.name == "PROCESSING":
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+
+            try:
+                # Upload to Gemini
+                myfile = genai.upload_file(tmp_path)
+                
+                # Wait for processing
                 import time
-                time.sleep(2)
-                audio_file = genai.get_file(audio_file.name)
-            
-            if audio_file.state.name == "FAILED":
-                raise ValueError("Audio processing failed on Gemini side.")
+                while myfile.state.name == "PROCESSING":
+                    time.sleep(1)
+                    myfile = genai.get_file(myfile.name)
 
-            st.success(f"Audio uploaded successfully: {audio_file.name}")
+                # Transcribe
+                prompt = "Transcribe this meeting in UK English. Identify speakers if possible. Output ONLY the transcript."
+                res = model.generate_content([prompt, myfile])
+                st.session_state["transcript"] = res.text
+                st.rerun()
 
-            prompt = (
-                "You are an expert transcriptionist for HSE Capital & Estates meetings. "
-                "Transcribe in UK English the following meeting audio accurately. "
-                "For each speaker, if a name is mentioned, use their name (e.g., Chairperson:, John Smith:). "
-                "If not, label generically as Speaker 1:, Speaker 2:, etc., incrementing for each new unidentified voice. "
-                "IMPORTANT: Output ONLY the transcript text. Do not include any conversational filler, introductory remarks, or sign-offs at the end. "
-                "Ensure all currency figures are transcribed with the Euro symbol (€)."
-            )
-            
-            # Generate Transcript
-            result = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
-            
-            # Robust text extraction to handle "no valid Part" errors
-            try:
-                transcript = result.text
-            except ValueError:
-                # Handle cases where the model returns no content
-                transcript = "(No transcript generated. The audio might be silent, or safety filters were triggered.)"
-                if result.candidates:
-                     st.warning(f"Model finish reason: {result.candidates[0].finish_reason}")
-            
-            st.session_state["transcript"] = transcript
-            st.success("Transcript generated successfully.")
+            except Exception as e:
+                st.error(f"Error: {e}")
+            finally:
+                if os.path.exists(tmp_path): os.remove(tmp_path)
 
-        except Exception as e:
-            st.error(f"An error occurred during transcription: {e}")
-            if audio_file:
-                try:
-                    genai.delete_file(audio_file.name)
-                except Exception:
-                    pass
-        finally:
-            # Cleanup Gemini file
-            if audio_file:
-                 try:
-                    genai.delete_file(audio_file.name)
-                    st.info(f"Processed and deleted uploaded file: {audio_file.name} from Gemini.")
-                 except Exception as del_e:
-                    st.warning(f"Could not delete uploaded file {audio_file.name} from Gemini: {del_e}")
-            # Cleanup local temp file
-            if os.path.exists(tmp_file_path):
-                os.remove(tmp_file_path)
+# --- Main Application Tabs ---
+else:
+    st.success("✅ Transcript Ready")
+    
+    # Create the NotebookLM style tab layout
+    tab1, tab2, tab3, tab4 = st.tabs(["📄 Minutes & Actions", "🔍 Briefing Overview", "💬 Chat with Meeting", "📝 Raw Transcript"])
 
-# --- Display Transcript and Generate Minutes ---
-if "transcript" in st.session_state:
-    st.markdown("## 📄 Transcript")
-    st.text_area("Full Meeting Transcript:", st.session_state["transcript"], height=300, key="transcript_display_area")
-
-    if st.button("📊 Extract & Format Meeting Minutes", key="summarise_button"):
-        with st.spinner("Generating structured meeting minutes..."):
-            try:
-                current_transcript = st.session_state['transcript']
-                # --- Structured Summary, Capital & Estates ---
-                prompt_structured = f"""
-You are an AI assistant for Health Service Executive (HSE) Capital & Estates meetings.
-Your task is to extract detailed UK English, structured information from the provided meeting transcript and return a JSON object matching the following keys.
-Format all dates as DD/MM/YYYY and all times as HH:MM (24 hour).
-Ensure all currency values use the Euro symbol (€), not Pounds (£).
-If a key is not mentioned, use "Not mentioned" or an empty list if appropriate.
-
-Keys to include:
-- meetingTitle
-- meetingDate
-- startTime
-- endTime
-- location
-- chairperson
-- minuteTaker
-- attendees (list)
-- apologies (list)
-- previousMeetingDate
-- mattersArising (list)
-- declarationsOfInterest
-- majorProjects (list)
-- minorProjects (list)
-- estatesStrategy (list)
-- healthSafety (list)
-- riskRegister (list)
-- financeUpdate (list)
-- aob (list)
-- nextMeetingDate
-- meetingClosedTime
-- minutesPreparedBy
-- preparationDate
-
-Transcript:
----
-{current_transcript}
----
-
-Provide ONLY the JSON object in your response. Do not include any other text before or after the JSON.
-"""
-                # Use generation config to enforce JSON if supported by the model
-                generation_config = {"response_mime_type": "application/json"}
-                
-                response1 = model.generate_content(
-                    prompt_structured, 
-                    generation_config=generation_config,
-                    request_options={"timeout": 600}
-                )
-                
-                # Robust JSON parsing
-                try:
-                    # Safely access text
+    # --- TAB 1: Minutes Generation (Original Functionality) ---
+    with tab1:
+        st.header("Formal Minutes")
+        if "minutes" not in st.session_state:
+            if st.button("Generate Minutes"):
+                with st.spinner("Extracting structured data..."):
+                    prompt_minutes = f"""
+                    Extract structured JSON data from this transcript for a HSE Capital & Estates meeting.
+                    Keys: meetingTitle, meetingDate, attendees, apologies, mattersArising, majorProjects, minorProjects, estatesStrategy, healthSafety, riskRegister, financeUpdate, aob, nextMeetingDate.
+                    Use 'Not mentioned' if missing. Dates as DD/MM/YYYY. Currency in Euro (€).
+                    Transcript: {st.session_state['transcript']}
+                    """
+                    # Enforce JSON
                     try:
-                        response_text = response1.text
-                    except ValueError:
-                        response_text = ""
+                        res = model.generate_content(prompt_minutes, generation_config={"response_mime_type": "application/json"})
+                        structured = json.loads(res.text)
+                        
+                        # Handle potential list wrapper
+                        if isinstance(structured, list): structured = structured[0]
+                        
+                        st.session_state["structured"] = structured
+                        st.session_state["minutes"] = generate_capital_estates_minutes(structured)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to generate minutes: {e}")
+        
+        if "minutes" in st.session_state:
+            st.text_area("Minutes Draft:", st.session_state["minutes"], height=600)
+            st.download_button(
+                "📥 Download Minutes (DOCX)",
+                create_docx(st.session_state["minutes"]),
+                "Minutes.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
+
+    # --- TAB 2: Briefing Overview (NotebookLM Style) ---
+    with tab2:
+        st.header("Meeting Briefing")
+        st.caption("A high-level overview of the meeting's themes and dynamics.")
+        
+        if "overview" not in st.session_state:
+            if st.button("Generate Briefing Doc"):
+                with st.spinner("Analyzing meeting dynamics..."):
+                    prompt_overview = f"""
+                    You are an expert analyst. Create a "Briefing Document" based on this transcript.
+                    Format it clearly with Markdown. Include the following sections:
+                    1. **Executive Summary**: A 3-sentence high-level summary.
+                    2. **Key Themes**: The 3-4 main topics discussed (e.g., Budget Deficits, Staffing).
+                    3. **Key Decisions**: What was actually decided (vs just discussed).
+                    4. **Contention Points**: Were there any disagreements or areas of concern?
+                    5. **Quote of the Meeting**: The most impactful quote.
                     
-                    structured = json.loads(response_text)
-                except json.JSONDecodeError:
-                    # Fallback regex extraction if raw text returned
-                    # Re-use safe response_text from above
-                    json_text_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response_text if 'response_text' in locals() else "", re.DOTALL)
-                    if json_text_match:
-                        json_str = json_text_match.group(1) or json_text_match.group(2)
-                        structured = json.loads(json_str.strip())
-                    else:
-                        # Default to empty dict if JSON fails
-                        structured = {}
+                    Transcript:
+                    {st.session_state['transcript']}
+                    """
+                    res = model.generate_content(prompt_overview)
+                    st.session_state["overview"] = res.text
+                    st.rerun()
 
-                # FIX: Handle case where AI returns a list instead of a dictionary
-                if isinstance(structured, list):
-                    if len(structured) > 0 and isinstance(structured[0], dict):
-                        structured = structured[0]
-                    else:
-                        # If list is empty or doesn't contain a dict, default to empty dict
-                        structured = {}
+        if "overview" in st.session_state:
+            st.markdown(st.session_state["overview"])
+            st.download_button(
+                "📥 Download Briefing",
+                create_docx(st.session_state["overview"], kind="overview"),
+                "Briefing_Doc.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            )
 
-                st.session_state["structured"] = structured
+    # --- TAB 3: Chat with Meeting (NotebookLM Style) ---
+    with tab3:
+        st.header("Chat with your Meeting")
+        st.caption("Ask questions like 'What was the budget for the new wing?' or 'Did John agree to the timeline?'")
 
-                # Generate formatted minutes
-                if "structured" in st.session_state:
-                    minutes_text = generate_capital_estates_minutes(st.session_state["structured"])
-                    st.session_state["minutes"] = minutes_text
-                    st.success("Meeting minutes generated in HSE Capital & Estates format.")
+        # Display chat history
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
 
-                # --- Generate Narrative Summary for Whole Meeting ---
-                prompt_narrative = f"""
-You are an AI assistant tasked with creating a professional, concise summary of a HSE Capital & Estates meeting in UK English.
-Based on the following transcript, write a coherent, narrative summary of the meeting.
-The summary should be well-organized, easy to read, and capture the main points, discussions, and outcomes.
-Ensure all currency figures are formatted with the Euro symbol (€).
-Clearly indicate who said what; if a speaker's name is not provided, use labels like "Speaker 1", "Speaker 2", etc.
-Do not include speaker labels unless essential for context.
+        # Chat Input
+        if prompt := st.chat_input("Ask about the meeting..."):
+            # Add user message
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
 
-Transcript:
----
-{current_transcript}
----
+            # Generate response
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    chat_prompt = f"""
+                    You are a helpful assistant answering questions about a specific meeting transcript.
+                    
+                    RULES:
+                    1. Answer ONLY based on the transcript provided below.
+                    2. If the info isn't there, say "I couldn't find that in the transcript."
+                    3. Be concise and professional.
+                    4. Use UK English.
+                    
+                    TRANSCRIPT:
+                    {st.session_state['transcript']}
+                    
+                    USER QUESTION:
+                    {prompt}
+                    """
+                    
+                    response = model.generate_content(chat_prompt)
+                    st.markdown(response.text)
+                    st.session_state.messages.append({"role": "assistant", "content": response.text})
 
-Narrative Summary:
-"""
-                response2 = model.generate_content(prompt_narrative, request_options={"timeout": 1200})
-                
-                try:
-                    st.session_state["narrative"] = response2.text
-                except ValueError:
-                    st.session_state["narrative"] = "Unable to generate narrative summary (Empty response from model)."
+    # --- TAB 4: Raw Transcript ---
+    with tab4:
+        st.header("Raw Transcript")
+        st.text_area("Full Text", st.session_state["transcript"], height=600)
 
-            except Exception as e:
-                st.error(f"An error occurred during summarization: {e}")
-                st.error(f"Details: {str(e)}")
-
-# --- Key Points and Actions Summary ---
-if "transcript" in st.session_state and "minutes" in st.session_state:
-    if st.button("🧾 Summarise Meeting: Key Points & Actions", key="keypoints_button"):
-        with st.spinner("Summarising transcript for key points and actions..."):
-            try:
-                prompt_keypoints = f"""
-You are an AI assistant for HSE Capital & Estates meetings.
-Summarise the following transcript into concise bullet points, focusing on:
-- Key discussion points
-- Major decisions made
-- All action items (with responsible persons/roles and deadlines, if mentioned)
-
-Ensure all currency figures are formatted with the Euro symbol (€).
-Be succinct, avoid repetition, and use bullet points.
-
-Transcript:
----
-{st.session_state['transcript']}
----
-"""
-                response = model.generate_content(prompt_keypoints, request_options={"timeout": 600})
-                
-                try:
-                    st.session_state["keypoints_summary"] = response.text
-                except ValueError:
-                    st.session_state["keypoints_summary"] = "Unable to generate key points (Empty response from model)."
-
-                st.success("Key points and action summary generated.")
-            except Exception as e:
-                st.error(f"An error occurred during key points summarisation: {e}")
-
-if "keypoints_summary" in st.session_state:
-    st.markdown("## 🔑 Key Points & Actions Summary")
-    st.text_area(
-        "Meeting Key Points & Actions:",
-        st.session_state["keypoints_summary"],
-        height=500,
-        key="keypoints_text_area"
-    )
-    st.download_button(
-        label="📥 Download Key Points & Actions (DOCX)",
-        data=create_keypoints_docx(st.session_state["keypoints_summary"]),
-        file_name=f"HSE_Meeting_KeyPoints_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        key="download_keypoints_docx"
-    )
-
-# --- Display Formatted Minutes and Download ---
-if "minutes" in st.session_state:
-    st.markdown("---")
-    st.markdown("## 🏢 Capital & Estates Meeting Minutes (Draft)")
-    st.text_area(
-        "Drafted HSE Capital & Estates Meeting Minutes:",
-        st.session_state["minutes"],
-        height=900,
-        key="minutes_text_area"
-    )
-    st.download_button(
-        label="📥 Download Minutes (DOCX)",
-        data=create_docx(st.session_state["minutes"], kind="minutes"),
-        file_name=f"HSE_Capital_Estates_Minutes_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        key="download_minutes_docx"
-    )
-
-# --- Download Narrative Summary as DOCX ---
-if "narrative" in st.session_state:
-    st.markdown("## 📝 Download Meeting Summary")
-    st.text_area(
-        "Meeting Narrative Summary:",
-        st.session_state["narrative"],
-        height=600,
-        key="narrative_text_area"
-    )
-    st.download_button(
-        label="📥 Download Meeting Summary (DOCX)",
-        data=create_narrative_docx(st.session_state["narrative"]),
-        file_name=f"HSE_Meeting_Summary_{datetime.now().strftime('%Y%m%d_%H%M')}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        key="download_narrative_docx"
-    )
-
-# --- Footer ---
-st.markdown("---")
-st.markdown(
-    "**Disclaimer:** This implementation has been tested using sample data. "
-    "Adjustments may be required to ensure optimal performance and accuracy with real-world meeting audio. "
-    "Always verify the accuracy of transcriptions and minutes."
-)
-st.markdown("Created by Dave Maher | For HSE internal use.")
