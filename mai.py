@@ -9,6 +9,7 @@ import io
 import tempfile
 import re
 import base64
+import struct  # Required for WAV header construction
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
 
 # --- Configuration ---
@@ -46,6 +47,26 @@ def configure_genai_with_current_key():
     current_key = keys[st.session_state.key_index]
     genai.configure(api_key=current_key)
     return genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
+
+# --- Helper: Add WAV Header to Raw PCM ---
+def add_wav_header(pcm_data, sample_rate=24000, channels=1, bit_depth=16):
+    """
+    Wraps raw PCM audio data in a valid WAV container header 
+    so browsers can play it.
+    """
+    header = b'RIFF'
+    header += struct.pack('<I', 36 + len(pcm_data))
+    header += b'WAVEfmt '
+    header += struct.pack('<I', 16) # Size of fmt chunk
+    header += struct.pack('<H', 1)  # Format tag: 1 = PCM
+    header += struct.pack('<H', channels)
+    header += struct.pack('<I', sample_rate)
+    header += struct.pack('<I', sample_rate * channels * (bit_depth // 8)) # Byte rate
+    header += struct.pack('<H', channels * (bit_depth // 8)) # Block align
+    header += struct.pack('<H', bit_depth) # Bits per sample
+    header += b'data'
+    header += struct.pack('<I', len(pcm_data))
+    return header + pcm_data
 
 # --- Robust Audio Processor (Transcribe) ---
 def process_audio_with_rotation(tmp_file_path, context_info):
@@ -145,13 +166,11 @@ def robust_text_gen(prompt):
             raise e
     raise Exception("All keys busy.")
 
-# --- Audio Generator (For Podcast - Fixed for compatibility) ---
+# --- Audio Generator (For Podcast - Robust) ---
 def generate_podcast_audio(script_text):
     """
-    Sends the script to Gemini TTS model using raw dictionary config
-    to bypass version mismatches in the library.
+    Sends the script to Gemini TTS model and returns (audio_bytes, mime_type).
     """
-    # Configure with current key
     configure_genai_with_current_key()
     
     try:
@@ -159,13 +178,10 @@ def generate_podcast_audio(script_text):
         
         prompt = f"""
         Read the following podcast script naturally and engagingly.
-        
         SCRIPT:
         {script_text}
         """
         
-        # FIX: Sending raw dictionary instead of using genai.types.SpeechConfig
-        # This prevents the 'no attribute SpeechConfig' error on older libs.
         response = model.generate_content(
             prompt,
             generation_config={
@@ -180,16 +196,16 @@ def generate_podcast_audio(script_text):
             }
         )
         
-        # Extract audio blob
+        # Extract audio blob AND mime type
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
                 if part.inline_data:
-                    return part.inline_data.data # Returns base64/bytes
-        return None
+                    return part.inline_data.data, part.inline_data.mime_type
+        return None, None
 
     except Exception as e:
         st.warning(f"Audio generation unavailable with current key/region: {e}")
-        return None
+        return None, None
 
 # --- HSE Capital & Estates Minutes Generator ---
 def generate_hse_minutes(structured):
@@ -353,7 +369,6 @@ if "messages" not in st.session_state:
 
 # --- Sidebar ---
 with st.sidebar:
-    # UPDATED: Replaced deprecated use_container_width=True with width="stretch" per user instruction
     st.image(LOGO_URL, width="stretch")
     st.title("MAI Recap Pro")
     st.caption("Capital & Estates Assistant")
@@ -370,7 +385,7 @@ with st.sidebar:
         st.info("This application's intellectual property belongs to Dave Maher.")
 
     st.markdown("---")
-    st.markdown("**Version:** 4.1 (Compat Fix)")
+    st.markdown("**Version:** 4.2 (Audio Fix)")
     st.info("System optimized for UK/Irish English.")
 
 # --- Main UI Header ---
@@ -534,16 +549,24 @@ if "transcript" in st.session_state:
             st.markdown("---")
             if st.button("🎧 Step 2: Generate Audio"):
                 with st.spinner("Synthesizing voice (this may take 20-30 seconds)..."):
-                    audio_data = generate_podcast_audio(st.session_state["podcast"])
+                    # Get audio + mime type
+                    audio_data, mime_type = generate_podcast_audio(st.session_state["podcast"])
+                    
                     if audio_data:
+                        # AUDIO FIX: If raw PCM, wrap in WAV header
+                        if "pcm" in mime_type.lower() or "l16" in mime_type.lower() or "audio/x-raw" in mime_type.lower():
+                             audio_data = add_wav_header(audio_data)
+                             mime_type = "audio/wav"
+                        
                         st.session_state["podcast_audio"] = audio_data
+                        st.session_state["podcast_mime"] = mime_type
                         st.success("Audio Generated!")
                     else:
                         st.error("Audio generation failed. Please try again.")
 
         if "podcast_audio" in st.session_state:
-            # Play Audio
-            st.audio(st.session_state["podcast_audio"], format="audio/wav")
+            # Play Audio using dynamic mime type
+            st.audio(st.session_state["podcast_audio"], format=st.session_state.get("podcast_mime", "audio/wav"))
 
     # --- TAB 5: CHAT ---
     with t5:
