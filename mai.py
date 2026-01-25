@@ -9,7 +9,6 @@ import tempfile
 import re
 
 # --- Configuration ---
-# Updated to Gemini 3 Flash Preview as requested
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
 
 # --- Utility Functions ---
@@ -33,22 +32,27 @@ def get_gemini_text_safe(response):
 
 def detect_speakers(text):
     """
-    Scans the transcript for patterns like 'Speaker 1:', 'Man 2:', etc.
-    Returns a sorted list of unique speaker labels found.
+    Scans the transcript for patterns like 'Speaker 1:', '**Speaker 1**:', etc.
+    Returns a clean list of speaker names without markdown formatting.
     """
     if not text:
         return []
-    # Regex looks for lines starting with words followed by a colon
-    # Catches "Speaker 1:", "John:", "Unknown Speaker:"
-    pattern = r'(?m)^([A-Za-z0-9\s\(\)\-\.]+)[:]'
+    
+    # Regex to catch:
+    # 1. Start of line
+    # 2. Optional markdown bold (** or __)
+    # 3. The Name (Group 1)
+    # 4. Optional markdown bold closure
+    # 5. A colon
+    pattern = r'(?m)^(?:[\*\_]{2})?([A-Za-z0-9\s\(\)\-\.]+?)(?:[\*\_]{2})?[:]'
+    
     matches = re.findall(pattern, text)
     
-    # Filter for likely generic names to help the user, or return all unique
-    # We return all unique to be safe, sorted alphabetically
+    # Filter and sort unique names
     unique_speakers = sorted(list(set(matches)))
     
-    # Filter out very long matches that might be false positives (e.g. a sentence that looks like a speaker tag)
-    clean_speakers = [s for s in unique_speakers if len(s) < 30]
+    # Filter out very long matches or empty strings
+    clean_speakers = [s for s in unique_speakers if len(s) < 30 and s.strip()]
     return clean_speakers
 
 # --- HSE Capital & Estates Minutes Generator ---
@@ -232,7 +236,7 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=180)
     st.markdown(f"**Engine:** `{GEMINI_MODEL_NAME}`")
-    st.markdown("**Version:** 3.2 Pro")
+    st.markdown("**Version:** 3.3 Pro")
     
     st.markdown("### 🛠️ Session Tools")
     if st.button("🗑️ New Meeting", type="primary"):
@@ -268,13 +272,27 @@ with st.sidebar:
                     txt = st.session_state["transcript"]
                     count = 0
                     for old, new in replacements.items():
-                        # Replace "Speaker 1:" with "John Doe:"
-                        # We use regex to be safe about the colon
-                        txt = txt.replace(f"{old}:", f"{new}:")
-                        count += 1
-                    
+                        # Try plain replacement: "Speaker 1:" -> "Dr. Smith:"
+                        if f"{old}:" in txt:
+                            txt = txt.replace(f"{old}:", f"{new}:")
+                            count += 1
+                        
+                        # Try markdown bold replacement: "**Speaker 1**:" -> "**Dr. Smith**:"
+                        # This catches cases where Gemini formatted the output with bolding
+                        elif f"**{old}**:" in txt:
+                            txt = txt.replace(f"**{old}**:", f"**{new}**:")
+                            count += 1
+                            
+                        # Try markdown bold replacement without colon match (rare but possible)
+                        elif f"**{old}**" in txt:
+                             txt = txt.replace(f"**{old}**", f"**{new}**")
+                             count += 1
+
                     st.session_state["transcript"] = txt
-                    st.toast(f"Updated {count} speaker identities successfully!", icon="✅")
+                    if count > 0:
+                        st.toast(f"Success! Updated speakers in transcript.", icon="✅")
+                    else:
+                        st.toast("No changes made. Check the exact spelling matches.", icon="⚠️")
                     st.rerun()
 
 # --- Main Layout ---
@@ -297,21 +315,22 @@ if not st.session_state["transcript"]:
             help="Providing names here helps the AI identify speakers correctly during the initial listen."
         )
 
-    tab_up, tab_rec = st.tabs(["📁 Upload File", "🎙️ Record Audio"])
+    # REORDERED TABS: Record First
+    tab_rec, tab_up = st.tabs(["🎙️ Record Audio", "📁 Upload File"])
     
     audio_bytes = None
     
-    with tab_up:
-        uploaded_audio = st.file_uploader("Upload Audio (MP3, WAV, M4A)", type=["wav", "mp3", "m4a", "ogg"])
-        if uploaded_audio:
-            st.audio(uploaded_audio)
-            audio_bytes = uploaded_audio
-            
     with tab_rec:
         recorded_audio = st.audio_input("Record Microphone")
         if recorded_audio:
             st.audio(recorded_audio)
             audio_bytes = recorded_audio
+
+    with tab_up:
+        uploaded_audio = st.file_uploader("Upload Audio (MP3, WAV, M4A)", type=["wav", "mp3", "m4a", "ogg"])
+        if uploaded_audio:
+            st.audio(uploaded_audio)
+            audio_bytes = uploaded_audio
 
     if audio_bytes and st.button("🚀 Process Meeting"):
         with st.status("Processing Meeting Audio...", expanded=True) as status:
@@ -349,15 +368,17 @@ if not st.session_state["transcript"]:
                     st.stop()
 
                 # 3. Transcribe
-                status.write("Transcribing and identifying speakers...")
+                status.write("Transcribing and analysing speakers...")
                 context_prompt = f"Context/Attendees: {context_info}" if context_info else ""
                 
+                # PROMPT UPDATE: Enforce Irish/UK English and specific formatting
                 prompt = f"""
                 You are a professional transcriber for HSE Capital & Estates.
                 {context_prompt}
-                Task: Transcribe the audio in UK English. 
-                Format: strictly use 'Speaker Name:' followed by text. 
-                If you cannot identify the name, use 'Speaker 1:', 'Speaker 2:', etc.
+                Task: Transcribe the audio using strict Irish/UK English spelling (e.g. 'Analysing', 'Programme', 'Centre').
+                Format: Use '**Speaker Name**:' (bolded) followed by text. 
+                If you cannot identify the name, use '**Speaker 1**:', '**Speaker 2**:', etc.
+                Currency: Always use Euro (€).
                 Do not summarise yet, provide the full dialogue.
                 """
                 
@@ -420,10 +441,11 @@ else:
         with col_act:
             st.markdown("##### Action")
             if st.button("✨ Generate / Update Minutes", type="primary"):
-                with st.spinner("Analyzing transcript and structuring minutes..."):
+                with st.spinner("Analysing transcript and structuring minutes..."):
+                    # PROMPT UPDATE: Irish English + Euro
                     prompt_minutes = f"""
                     You are an expert secretary for HSE Capital & Estates.
-                    Extract detailed structured data from this transcript (UK English).
+                    Extract detailed structured data from this transcript (Irish/UK English spelling).
                     Dates: DD/MM/YYYY. Currency: Euro (€).
                     
                     Return valid JSON only:
@@ -469,9 +491,11 @@ else:
     # --- TAB 3: INSIGHTS ---
     with t3:
         if st.button("📊 Generate Briefing Doc"):
-            with st.status("Generating Insights..."):
+            with st.status("Analysing dynamics..."):
+                # PROMPT UPDATE: Irish English + Euro
                 p_insight = f"""
-                Create a high-level "Briefing Document" (Markdown) from this transcript using UK English.
+                Create a high-level "Briefing Document" (Markdown) from this transcript using Irish/UK English (e.g. Analysing, Centre).
+                Currency: Euro (€).
                 Include:
                 1. Executive Summary
                 2. Key Strategic Decisions
@@ -502,8 +526,10 @@ else:
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
+                # PROMPT UPDATE: Irish English + Euro
                 p_chat = f"""
-                Answer strictly based on the transcript provided below. Use UK English.
+                Answer strictly based on the transcript provided below. Use Irish/UK English spelling.
+                Currency: Euro (€).
                 TRANSCRIPT: {st.session_state['transcript']}
                 QUESTION: {prompt}
                 """
@@ -512,4 +538,5 @@ else:
                     response = get_gemini_text_safe(res)
                     st.markdown(response)
                     st.session_state.messages.append({"role": "assistant", "content": response})
+
 
