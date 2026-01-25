@@ -8,10 +8,13 @@ from docx import Document
 import io
 import tempfile
 import re
+import base64
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
 
 # --- Configuration ---
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
+# TTS Model for Podcast Audio
+TTS_MODEL_NAME = 'gemini-2.5-flash-preview-tts' 
 LOGO_URL = "https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png"
 
 # --- API Key Management ---
@@ -44,7 +47,7 @@ def configure_genai_with_current_key():
     genai.configure(api_key=current_key)
     return genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
 
-# --- Robust Audio Processor (Fixes 403 Error) ---
+# --- Robust Audio Processor (Transcribe) ---
 def process_audio_with_rotation(tmp_file_path, context_info):
     """
     Handles the entire flow: Upload -> Wait -> Generate -> Delete.
@@ -141,6 +144,51 @@ def robust_text_gen(prompt):
         except Exception as e:
             raise e
     raise Exception("All keys busy.")
+
+# --- Audio Generator (For Podcast) ---
+def generate_podcast_audio(script_text):
+    """
+    Sends the script to Gemini TTS model to generate audio.
+    """
+    # Configure with current key
+    configure_genai_with_current_key()
+    
+    # Initialize the TTS specific model
+    # We use a try/except here because TTS availability can vary by API key type
+    try:
+        model = genai.GenerativeModel(model_name=TTS_MODEL_NAME)
+        
+        prompt = f"""
+        Read the following podcast script naturally and engagingly.
+        
+        SCRIPT:
+        {script_text}
+        """
+        
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.types.GenerationConfig(
+                response_modalities=["AUDIO"],
+                speech_config=genai.types.SpeechConfig(
+                    voice_config=genai.types.VoiceConfig(
+                        prebuilt_voice_config=genai.types.PrebuiltVoiceConfig(
+                            voice_name="Aoede" # Deep, professional voice
+                        )
+                    )
+                )
+            )
+        )
+        
+        # Extract audio blob
+        if response.candidates and response.candidates[0].content.parts:
+            for part in response.candidates[0].content.parts:
+                if part.inline_data:
+                    return part.inline_data.data # Returns base64/bytes
+        return None
+
+    except Exception as e:
+        st.warning(f"Audio generation unavailable with current key/region: {e}")
+        return None
 
 # --- HSE Capital & Estates Minutes Generator ---
 def generate_hse_minutes(structured):
@@ -304,7 +352,7 @@ if "messages" not in st.session_state:
 
 # --- Sidebar ---
 with st.sidebar:
-    st.image(LOGO_URL, use_container_width=True)
+    st.image(LOGO_URL, width="stretch")
     st.title("MAI Recap Pro")
     st.caption("Capital & Estates Assistant")
     
@@ -320,7 +368,7 @@ with st.sidebar:
         st.info("This application's intellectual property belongs to Dave Maher.")
 
     st.markdown("---")
-    st.markdown("**Version:** 3.8 (Podcast + Briefing)")
+    st.markdown("**Version:** 4.0 (Audio Enabled)")
     st.info("System optimized for UK/Irish English.")
 
 # --- Main UI Header ---
@@ -397,8 +445,8 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
 if "transcript" in st.session_state:
     st.markdown("---")
     
-    # Updated Tabs with new features
-    t1, t2, t3, t4, t5 = st.tabs(["📄 Transcript", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast Script", "💬 Chat Assistant"])
+    # Updated Tabs
+    t1, t2, t3, t4, t5 = st.tabs(["📄 Transcript", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast Studio", "💬 Chat"])
 
     # --- TAB 1: TRANSCRIPT ---
     with t1:
@@ -461,21 +509,39 @@ if "transcript" in st.session_state:
 
     # --- TAB 4: PODCAST ---
     with t4:
-        st.info("Turn this meeting into a 'NotebookLM' style conversational script.")
-        if st.button("Generate Podcast Script"):
+        st.markdown("### 🎙️ HSE Podcast Studio")
+        st.info("Step 1: Generate the script. Step 2: Generate the audio.")
+        
+        if st.button("Step 1: Create Script"):
             with st.spinner("Writing script..."):
                 p_pod = f"""
-                Convert this meeting transcript into a lively, engaging 5-minute podcast script between two hosts, 'Sarah' and 'Mike'.
-                They should discuss the key outcomes of the HSE Capital & Estates meeting in a professional but conversational tone.
-                Use UK/Irish English idioms where appropriate.
+                Convert this meeting transcript into a lively, engaging 3-minute podcast script for HSE staff.
+                Format: Pure dialogue only. No stage directions like [Music] or [Laughs].
+                Speakers: Sarah (Host) and Mike (Expert).
+                Topic: Key outcomes of the Capital & Estates meeting.
+                Tone: Professional but conversational Irish/UK English.
                 TRANSCRIPT: {st.session_state['transcript']}
                 """
                 res = robust_text_gen(p_pod)
                 st.session_state["podcast"] = res.text
         
         if "podcast" in st.session_state:
-            st.markdown(st.session_state["podcast"])
+            st.text_area("Script Preview:", st.session_state["podcast"], height=300)
             st.download_button("Download Script", create_docx(st.session_state["podcast"], "other"), "Podcast_Script.docx")
+            
+            st.markdown("---")
+            if st.button("🎧 Step 2: Generate Audio"):
+                with st.spinner("Synthesizing voice (this may take 20-30 seconds)..."):
+                    audio_data = generate_podcast_audio(st.session_state["podcast"])
+                    if audio_data:
+                        st.session_state["podcast_audio"] = audio_data
+                        st.success("Audio Generated!")
+                    else:
+                        st.error("Audio generation failed. Please try again.")
+
+        if "podcast_audio" in st.session_state:
+            # Play Audio
+            st.audio(st.session_state["podcast_audio"], format="audio/wav")
 
     # --- TAB 5: CHAT ---
     with t5:
@@ -504,5 +570,6 @@ if "transcript" in st.session_state:
 # --- Footer ---
 st.markdown("---")
 st.caption("HSE Capital & Estates | Internal Use Only")
+
 
 
