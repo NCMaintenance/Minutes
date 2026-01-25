@@ -8,7 +8,7 @@ from docx import Document
 import io
 import tempfile
 import re
-from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, DeadlineExceeded
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
 
 # --- Configuration ---
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
@@ -44,52 +44,104 @@ def configure_genai_with_current_key():
     genai.configure(api_key=current_key)
     return genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
 
-# --- Robust API Wrapper with Key Rotation ---
-def robust_api_call(task_description, api_func, *args, **kwargs):
+# --- Robust Audio Processor (Fixes 403 Error) ---
+def process_audio_with_rotation(tmp_file_path, context_info):
     """
-    Executes a Gemini API call with Key Rotation and Exponential Backoff.
-    If Key 1 fails, it switches to Key 2, etc.
+    Handles the entire flow: Upload -> Wait -> Generate -> Delete.
+    If ANY step fails (Quota or Permission), it rotates keys and RE-UPLOADS the file.
     """
-    max_retries = 6 # Enough to cycle through 3 keys twice
+    max_retries = 6 
     base_delay = 1
+    keys = get_available_keys()
     
+    context_str = f"Context: {context_info}" if context_info else ""
+    prompt = f"""
+    You are a professional transcriber for HSE Capital & Estates.
+    {context_str}
+    Task: Transcribe the audio using strict Irish/UK English spelling (e.g. 'Programme', 'Paediatric', 'Centre').
+    Format: Use '**Speaker Name**:' followed by text.
+    Currency: Euro (€).
+    Speaker IDs: If unknown, use 'Speaker 1', 'Speaker 2'.
+    """
+
+    for attempt in range(max_retries):
+        audio_file = None
+        try:
+            # 1. Configure Key (Rotates if needed)
+            model = configure_genai_with_current_key()
+            current_key_num = st.session_state.key_index + 1
+            
+            # 2. Upload with CURRENT Key
+            # We don't show a toast for every upload to avoid spam, unless it's a retry
+            if attempt > 0:
+                st.toast(f"Retrying with Key {current_key_num}...", icon="🔄")
+            
+            # Use the library-level upload_file which uses the active `configure` key
+            audio_file = genai.upload_file(path=tmp_file_path, display_name="HSE_Audio")
+            
+            # Wait for processing
+            while audio_file.state.name == "PROCESSING":
+                time.sleep(2)
+                audio_file = genai.get_file(audio_file.name)
+            
+            if audio_file.state.name == "FAILED":
+                raise Exception("Audio processing failed by Google.")
+
+            # 3. Generate
+            response = model.generate_content(
+                [prompt, audio_file],
+                request_options={"timeout": 1200}
+            )
+            
+            # 4. Success! Cleanup and Return
+            try:
+                genai.delete_file(audio_file.name)
+            except: pass
+            
+            return response.text
+
+        except (ResourceExhausted, ServiceUnavailable, PermissionDenied, Exception) as e:
+            # Cleanup failed file
+            if audio_file:
+                try:
+                    genai.delete_file(audio_file.name)
+                except: pass
+
+            # Check if it's a retry-able error
+            error_str = str(e)
+            is_quota = "429" in error_str or "ResourceExhausted" in error_str
+            is_perm = "403" in error_str or "PermissionDenied" in error_str
+            
+            # If it's a quota error OR a permission error (file owner mismatch), ROTATE.
+            if is_quota or is_perm or attempt < max_retries:
+                old_index = st.session_state.key_index
+                st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
+                wait_time = base_delay * (1.5 ** attempt)
+                st.toast(f"Key {old_index+1} failed. Switching to Key {st.session_state.key_index+1}...", icon="⚠️")
+                time.sleep(wait_time)
+            else:
+                raise e # Fatal error
+                
+    raise Exception("All API keys are currently overloaded. Please try again later.")
+
+# --- Robust Text Generator (Minutes) ---
+def robust_text_gen(prompt):
+    max_retries = 6
     keys = get_available_keys()
     
     for attempt in range(max_retries):
         try:
-            # Always ensure we are using the current configured model
             model = configure_genai_with_current_key()
-            
-            # If the function passed is a method (like model.generate_content), 
-            # we need to re-bind it to the NEW model instance because the old one 
-            # is tied to the old API key.
-            if hasattr(api_func, '__self__') and isinstance(api_func.__self__, genai.GenerativeModel):
-                # Re-bind the method to the new model instance
-                method_name = api_func.__name__
-                actual_func = getattr(model, method_name)
-            else:
-                actual_func = api_func
-
-            return actual_func(*args, **kwargs)
-            
+            return model.generate_content(prompt, request_options={"timeout": 600})
         except (ResourceExhausted, ServiceUnavailable):
-            # ROTATION LOGIC
+             # Rotate
             old_index = st.session_state.key_index
             st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
-            
-            wait_time = base_delay * (1.5 ** attempt) # Slightly faster retry since we are switching keys
-            
-            st.toast(
-                f"Quota limit on Key {old_index+1}. Switching to Key {st.session_state.key_index+1}...", 
-                icon="🔄"
-            )
-            time.sleep(wait_time)
-            
+            st.toast(f"Key {old_index+1} busy. Switching...", icon="🔄")
+            time.sleep(1)
         except Exception as e:
-            # Valid errors (like file too large) should fail immediately
             raise e
-            
-    raise Exception("All API keys are currently overloaded. Please try again later.")
+    raise Exception("All keys busy.")
 
 # --- HSE Capital & Estates Minutes Generator ---
 def generate_hse_minutes(structured):
@@ -215,7 +267,6 @@ st.markdown("""
 # Initial Config
 try:
     if "GEMINI_API_KEY" in st.secrets:
-        # Initial config with whatever key is currently active
         configure_genai_with_current_key()
     else:
         st.error("GEMINI_API_KEY missing from secrets.")
@@ -257,9 +308,14 @@ with st.sidebar:
             if key not in ['password_verified', 'key_index']:
                 del st.session_state[key]
         st.rerun()
+        
+    st.markdown("---")
+    # Added Dave Maher Button back
+    if st.button("Created by Dave Maher"):
+        st.info("This application's intellectual property belongs to Dave Maher.")
 
     st.markdown("---")
-    st.markdown("**Version:** 3.6 (Multi-Key)")
+    st.markdown("**Version:** 3.7 (Auto-Key-Fix)")
     st.info("System optimized for UK/Irish English.")
 
 # --- Main UI Header ---
@@ -318,64 +374,17 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
             tmp_file_path = tmp_file.name
         
         try:
-            # 1. Upload to Gemini (with Display Name)
-            st.info("Uploading audio to secure server...")
+            # CALL THE NEW ROBUST AUDIO PROCESSOR
+            transcript_text = process_audio_with_rotation(tmp_file_path, context_info)
             
-            # Since upload_file is not a method of a model but the library, we wrap it too
-            # but usually upload limit is different from generate limit.
-            # However, to be safe, we configure the key before upload.
-            configure_genai_with_current_key()
-            audio_file = genai.upload_file(path=tmp_file_path, display_name="HSE_Meeting_Audio")
-            
-            st.success(f"Audio uploaded successfully: {audio_file.name}")
-            
-            # 2. Wait for processing
-            while audio_file.state.name == "PROCESSING":
-                time.sleep(2)
-                audio_file = genai.get_file(audio_file.name)
-                
-            if audio_file.state.name == "FAILED":
-                st.error("Audio processing failed on server.")
-                st.stop()
-
-            # 3. Prompt
-            context_str = f"Context: {context_info}" if context_info else ""
-            prompt = f"""
-            You are a professional transcriber for HSE Capital & Estates.
-            {context_str}
-            Task: Transcribe the audio using strict Irish/UK English spelling (e.g. 'Programme', 'Paediatric', 'Centre').
-            Format: Use '**Speaker Name**:' followed by text.
-            Currency: Euro (€).
-            Speaker IDs: If unknown, use 'Speaker 1', 'Speaker 2'.
-            """
-            
-            # 4. Generate with Key Rotation & Timeout
-            # We pass a fresh model getter to the retry wrapper
-            model = configure_genai_with_current_key()
-            
-            response = robust_api_call(
-                "Transcription",
-                model.generate_content, 
-                [prompt, audio_file], 
-                request_options={"timeout": 1200}
-            )
-            
-            st.session_state["transcript"] = response.text
+            st.session_state["transcript"] = transcript_text
             st.success("Transcript generated successfully.")
+            st.info("Temporary audio files cleaned from server.")
 
         except Exception as e:
             st.error(f"Error: {e}")
             
         finally:
-            # 5. Cleanup
-            if 'audio_file' in locals() and audio_file:
-                try:
-                    # Configure with current key to ensure we have permission to delete
-                    configure_genai_with_current_key()
-                    genai.delete_file(audio_file.name)
-                    st.info(f"Cleaned up uploaded file: {audio_file.name}")
-                except Exception as del_e:
-                    pass 
             if os.path.exists(tmp_file_path):
                 os.remove(tmp_file_path)
 
@@ -415,16 +424,8 @@ if "transcript" in st.session_state:
                 Return ONLY valid JSON.
                 """
                 
-                # We need to get the model again to ensure it uses the active key
-                model = configure_genai_with_current_key()
-                
                 # EXECUTE WITH ROTATION & TIMEOUT
-                response = robust_api_call(
-                    "Minutes Generation",
-                    model.generate_content,
-                    prompt_structured,
-                    request_options={"timeout": 600}
-                )
+                response = robust_text_gen(prompt_structured)
                 
                 # Parse JSON
                 json_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response.text, re.DOTALL)
@@ -458,4 +459,5 @@ if "minutes" in st.session_state:
 # --- Footer ---
 st.markdown("---")
 st.caption("HSE Capital & Estates | Internal Use Only")
+
 
