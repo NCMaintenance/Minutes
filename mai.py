@@ -402,7 +402,7 @@ else:
         
         if "overview" not in st.session_state:
             if st.button("Generate Briefing Doc", key="btn_gen_overview"):
-                with st.spinner("Analyzing meeting dynamics..."):
+                with st.spinner("analysing meeting dynamics..."):
                     prompt_overview = f"""
                     You are an expert analyst for the HSE. Create a "Briefing Document" based on this transcript.
                     Format it clearly with Markdown. Use UK English. Include the following sections:
