@@ -145,16 +145,15 @@ def robust_text_gen(prompt):
             raise e
     raise Exception("All keys busy.")
 
-# --- Audio Generator (For Podcast) ---
+# --- Audio Generator (For Podcast - Fixed for compatibility) ---
 def generate_podcast_audio(script_text):
     """
-    Sends the script to Gemini TTS model to generate audio.
+    Sends the script to Gemini TTS model using raw dictionary config
+    to bypass version mismatches in the library.
     """
     # Configure with current key
     configure_genai_with_current_key()
     
-    # Initialize the TTS specific model
-    # We use a try/except here because TTS availability can vary by API key type
     try:
         model = genai.GenerativeModel(model_name=TTS_MODEL_NAME)
         
@@ -165,18 +164,20 @@ def generate_podcast_audio(script_text):
         {script_text}
         """
         
+        # FIX: Sending raw dictionary instead of using genai.types.SpeechConfig
+        # This prevents the 'no attribute SpeechConfig' error on older libs.
         response = model.generate_content(
             prompt,
-            generation_config=genai.types.GenerationConfig(
-                response_modalities=["AUDIO"],
-                speech_config=genai.types.SpeechConfig(
-                    voice_config=genai.types.VoiceConfig(
-                        prebuilt_voice_config=genai.types.PrebuiltVoiceConfig(
-                            voice_name="Aoede" # Deep, professional voice
-                        )
-                    )
-                )
-            )
+            generation_config={
+                "response_modalities": ["AUDIO"],
+                "speech_config": {
+                    "voice_config": {
+                        "prebuilt_voice_config": {
+                            "voice_name": "Aoede"
+                        }
+                    }
+                }
+            }
         )
         
         # Extract audio blob
@@ -352,6 +353,7 @@ if "messages" not in st.session_state:
 
 # --- Sidebar ---
 with st.sidebar:
+    # UPDATED: Replaced deprecated use_container_width=True with width="stretch" per user instruction
     st.image(LOGO_URL, width="stretch")
     st.title("MAI Recap Pro")
     st.caption("Capital & Estates Assistant")
@@ -368,7 +370,7 @@ with st.sidebar:
         st.info("This application's intellectual property belongs to Dave Maher.")
 
     st.markdown("---")
-    st.markdown("**Version:** 4.0 (Audio Enabled)")
+    st.markdown("**Version:** 4.1 (Compat Fix)")
     st.info("System optimized for UK/Irish English.")
 
 # --- Main UI Header ---
@@ -570,6 +572,5 @@ if "transcript" in st.session_state:
 # --- Footer ---
 st.markdown("---")
 st.caption("HSE Capital & Estates | Internal Use Only")
-
 
 
