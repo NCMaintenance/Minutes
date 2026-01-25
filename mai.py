@@ -72,7 +72,6 @@ def process_audio_with_rotation(tmp_file_path, context_info):
             current_key_num = st.session_state.key_index + 1
             
             # 2. Upload with CURRENT Key
-            # We don't show a toast for every upload to avoid spam, unless it's a retry
             if attempt > 0:
                 st.toast(f"Retrying with Key {current_key_num}...", icon="🔄")
             
@@ -124,7 +123,7 @@ def process_audio_with_rotation(tmp_file_path, context_info):
                 
     raise Exception("All API keys are currently overloaded. Please try again later.")
 
-# --- Robust Text Generator (Minutes) ---
+# --- Robust Text Generator (Minutes/Chat/Brief) ---
 def robust_text_gen(prompt):
     max_retries = 6
     keys = get_available_keys()
@@ -233,19 +232,22 @@ Minutes Approved By: ____________________ Date: ___________
     return template
 
 # --- DOCX Export Functions ---
-def create_minutes_docx(content):
+def create_docx(content, kind="minutes"):
     doc = Document()
-    doc.add_heading("HSE Capital & Estates Meeting Minutes", level=1)
-    for line in content.splitlines():
-        if line.strip().endswith(":") and not line.startswith("•"):
-            try:
-                doc.add_heading(line.strip(), level=2)
-            except:
+    if kind == "minutes":
+        doc.add_heading("HSE Capital & Estates Meeting Minutes", level=1)
+        for line in content.splitlines():
+            if line.strip().endswith(":") and not line.startswith("•"):
+                try: doc.add_heading(line.strip(), level=2)
+                except: doc.add_paragraph(line)
+            elif line.strip() == "________________________________________":
+                doc.add_paragraph("-" * 50)
+            elif line.strip():
                 doc.add_paragraph(line)
-        elif line.strip() == "________________________________________":
-            doc.add_paragraph("-" * 50)
-        elif line.strip():
-            doc.add_paragraph(line)
+    else:
+        doc.add_heading("Meeting Document", level=1)
+        doc.add_paragraph(content)
+        
     output = io.BytesIO()
     doc.save(output)
     output.seek(0)
@@ -296,6 +298,10 @@ if not st.session_state.password_verified:
                     st.error("Invalid code.")
     st.stop()
 
+# --- App State Init ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
 # --- Sidebar ---
 with st.sidebar:
     st.image(LOGO_URL, use_container_width=True)
@@ -310,12 +316,11 @@ with st.sidebar:
         st.rerun()
         
     st.markdown("---")
-    # Added Dave Maher Button back
     if st.button("Created by Dave Maher"):
         st.info("This application's intellectual property belongs to Dave Maher.")
 
     st.markdown("---")
-    st.markdown("**Version:** 3.7 (Auto-Key-Fix)")
+    st.markdown("**Version:** 3.8 (Podcast + Briefing)")
     st.info("System optimized for UK/Irish English.")
 
 # --- Main UI Header ---
@@ -374,7 +379,7 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
             tmp_file_path = tmp_file.name
         
         try:
-            # CALL THE NEW ROBUST AUDIO PROCESSOR
+            # CALL THE ROBUST AUDIO PROCESSOR
             transcript_text = process_audio_with_rotation(tmp_file_path, context_info)
             
             st.session_state["transcript"] = transcript_text
@@ -391,70 +396,110 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
 # --- Output Section ---
 if "transcript" in st.session_state:
     st.markdown("---")
-    st.markdown("## 📄 Transcript")
-    st.text_area("Full Transcript:", st.session_state["transcript"], height=300)
+    
+    # Updated Tabs with new features
+    t1, t2, t3, t4, t5 = st.tabs(["📄 Transcript", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast Script", "💬 Chat Assistant"])
 
-    if st.button("📊 Generate Official Minutes"):
-        with st.spinner("Extracting HSE Data Points..."):
-            try:
-                current_transcript = st.session_state['transcript']
-                prompt_structured = f"""
-                You are an expert secretary for HSE Capital & Estates.
-                Extract detailed structured data from this transcript using UK/Irish English.
-                Dates: DD/MM/YYYY. Currency: Euro (€).
-                
-                Keys to extract (Return empty list [] if not found):
-                - meetingTitle, meetingDate, startTime, endTime, location
-                - chairperson, minuteTaker
-                - attendees (list), apologies (list)
-                - mattersArising (list)
-                - declarationsOfInterest (string)
-                - majorProjects (list - Projects > €Xm)
-                - minorProjects (list - Minor Works/ICT)
-                - estatesStrategy (list)
-                - healthSafety (list)
-                - riskRegister (list)
-                - financeUpdate (list)
-                - aob (list)
-                - nextMeetingDate
+    # --- TAB 1: TRANSCRIPT ---
+    with t1:
+        st.text_area("Full Transcript:", st.session_state["transcript"], height=500)
 
-                TRANSCRIPT:
-                {current_transcript}
+    # --- TAB 2: MINUTES ---
+    with t2:
+        if st.button("Generate Official Minutes"):
+            with st.spinner("Extracting HSE Data Points..."):
+                try:
+                    prompt_structured = f"""
+                    You are an expert secretary for HSE Capital & Estates.
+                    Extract structured data from this transcript using UK/Irish English.
+                    Return ONLY valid JSON.
+                    TRANSCRIPT: {st.session_state['transcript']}
+                    
+                    Keys to extract: meetingTitle, meetingDate, startTime, endTime, location, chairperson, minuteTaker, attendees, apologies, mattersArising, declarationsOfInterest, majorProjects, minorProjects, estatesStrategy, healthSafety, riskRegister, financeUpdate, aob, nextMeetingDate.
+                    """
+                    
+                    # EXECUTE WITH ROTATION
+                    response = robust_text_gen(prompt_structured)
+                    
+                    # Parse JSON
+                    json_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response.text, re.DOTALL)
+                    if json_match:
+                        json_str = json_match.group(1) or json_match.group(2)
+                        structured = json.loads(json_str.strip())
+                        st.session_state["minutes"] = generate_hse_minutes(structured)
+                        st.success("Minutes Generated.")
+                    else:
+                        st.error("Could not parse AI response.")
+                except Exception as e:
+                    st.error(f"Error: {e}")
 
-                Return ONLY valid JSON.
+        if "minutes" in st.session_state:
+            st.text_area("Draft Minutes:", st.session_state["minutes"], height=600)
+            st.download_button("Download DOCX", create_docx(st.session_state["minutes"], "minutes"), "HSE_Minutes.docx")
+
+    # --- TAB 3: BRIEFING ---
+    with t3:
+        st.info("Generate a high-level summary for executive review.")
+        if st.button("Generate Briefing Note"):
+            with st.spinner("Analyzing..."):
+                p_brief = f"""
+                Create a high-level "Executive Briefing Note" for HSE management based on this transcript.
+                Use UK/Irish English.
+                Sections: 
+                1. Executive Summary
+                2. Key Strategic Decisions
+                3. Critical Risks / Issues
+                4. Action Items Table
+                TRANSCRIPT: {st.session_state['transcript']}
                 """
-                
-                # EXECUTE WITH ROTATION & TIMEOUT
-                response = robust_text_gen(prompt_structured)
-                
-                # Parse JSON
-                json_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response.text, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(1) or json_match.group(2)
-                    structured = json.loads(json_str.strip())
-                    st.session_state["minutes"] = generate_hse_minutes(structured)
-                    st.success("Minutes Generated Successfully.")
-                else:
-                    st.error("Could not parse AI response.")
-            
-            except Exception as e:
-                st.error(f"Generation Error: {e}")
+                res = robust_text_gen(p_brief)
+                st.session_state["briefing"] = res.text
+        
+        if "briefing" in st.session_state:
+            st.markdown(st.session_state["briefing"])
+            st.download_button("Download Briefing", create_docx(st.session_state["briefing"], "briefing"), "HSE_Briefing.docx")
 
-# --- Final Display ---
-if "minutes" in st.session_state:
-    st.markdown("---")
-    st.markdown("## 🏥 Draft Minutes")
-    st.text_area(
-        "Editable Draft:",
-        st.session_state["minutes"],
-        height=800
-    )
-    st.download_button(
-        label="📥 Download Minutes (DOCX)",
-        data=create_minutes_docx(st.session_state["minutes"]),
-        file_name=f"HSE_Minutes_{datetime.now().strftime('%Y%m%d')}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    )
+    # --- TAB 4: PODCAST ---
+    with t4:
+        st.info("Turn this meeting into a 'NotebookLM' style conversational script.")
+        if st.button("Generate Podcast Script"):
+            with st.spinner("Writing script..."):
+                p_pod = f"""
+                Convert this meeting transcript into a lively, engaging 5-minute podcast script between two hosts, 'Sarah' and 'Mike'.
+                They should discuss the key outcomes of the HSE Capital & Estates meeting in a professional but conversational tone.
+                Use UK/Irish English idioms where appropriate.
+                TRANSCRIPT: {st.session_state['transcript']}
+                """
+                res = robust_text_gen(p_pod)
+                st.session_state["podcast"] = res.text
+        
+        if "podcast" in st.session_state:
+            st.markdown(st.session_state["podcast"])
+            st.download_button("Download Script", create_docx(st.session_state["podcast"], "other"), "Podcast_Script.docx")
+
+    # --- TAB 5: CHAT ---
+    with t5:
+        st.info("Ask questions about the meeting details.")
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        if prompt := st.chat_input("E.g. What was the budget for Mallow?"):
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                p_chat = f"""
+                Answer strictly based on the transcript below.
+                Use UK/Irish English. Currency: Euro (€).
+                TRANSCRIPT: {st.session_state['transcript']}
+                QUESTION: {prompt}
+                """
+                with st.spinner("Thinking..."):
+                    res = robust_text_gen(p_chat)
+                    st.markdown(res.text)
+                    st.session_state.messages.append({"role": "assistant", "content": res.text})
 
 # --- Footer ---
 st.markdown("---")
