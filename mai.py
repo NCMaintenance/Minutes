@@ -1,6 +1,5 @@
 import streamlit as st
 import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 import json
 import os
 import time
@@ -9,6 +8,7 @@ from docx import Document
 import io
 import tempfile
 import re
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 
 # --- Configuration ---
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
@@ -20,31 +20,22 @@ def inject_custom_css():
         /* IMPORT FONTS */
         @import url('https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap');
 
-        /* MAIN LAYOUT */
+        /* MAIN LAYOUT - Clean White */
         .stApp {
             background-color: #FFFFFF;
             font-family: 'Roboto', sans-serif;
             color: #333333;
         }
 
-        /* HEADERS */
+        /* HEADERS - HSE Green */
         h1, h2, h3 {
-            color: #00563B !important; /* HSE Green */
+            color: #00563B !important;
             font-weight: 500;
         }
         
-        /* LOGO AREA */
-        .hse-header {
-            border-bottom: 2px solid #00563B;
-            padding-bottom: 15px;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-        }
-
-        /* SIDEBAR */
+        /* SIDEBAR - Light Grey */
         section[data-testid="stSidebar"] {
-            background-color: #F8F9FA; /* Light Grey */
+            background-color: #F8F9FA;
             border-right: 1px solid #E0E0E0;
         }
         section[data-testid="stSidebar"] h1, section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 {
@@ -59,100 +50,58 @@ def inject_custom_css():
             border-radius: 4px;
             font-weight: 500;
             padding: 0.5rem 1rem;
-            transition: opacity 0.2s;
         }
         .stButton > button:hover {
             opacity: 0.9;
             box-shadow: 0 2px 5px rgba(0,0,0,0.2);
         }
-        
-        /* SECONDARY BUTTONS (Outlined) */
-        div[data-testid="stButton"] button[kind="secondary"] {
-            background-color: transparent !important;
-            border: 1px solid #00563B !important;
-            color: #00563B !important;
-        }
 
         /* INPUT FIELDS */
-        .stTextInput > div > div > input, .stTextArea > div > div > textarea, .stSelectbox > div > div > div {
+        .stTextInput > div > div > input, .stTextArea > div > div > textarea {
             background-color: #FFFFFF !important;
             color: #333333 !important;
             border: 1px solid #CCCCCC !important;
-            border-radius: 4px;
         }
         .stTextInput > div > div > input:focus, .stTextArea > div > div > textarea:focus {
             border-color: #00563B !important;
             box-shadow: 0 0 0 1px #00563B;
         }
-
-        /* TABS */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 20px;
-            border-bottom: 1px solid #E0E0E0;
-        }
-        .stTabs [data-baseweb="tab"] {
-            height: 40px;
-            background-color: transparent;
-            border: none;
-            color: #666666;
-            font-weight: 500;
-        }
-        .stTabs [aria-selected="true"] {
-            color: #00563B !important;
-            border-bottom: 3px solid #00563B !important;
-        }
-
-        /* ALERTS / INFO BOXES */
-        div[data-testid="stStatusWidget"] {
-            background-color: #F0F7F4;
-            color: #00563B;
-            border: 1px solid #D1E7DD;
-        }
-        .stAlert {
-            border-radius: 4px;
-        }
-
-        /* METRICS */
-        div[data-testid="metric-container"] {
-            background-color: #F8F9FA;
-            padding: 10px;
-            border-radius: 4px;
-            border-left: 4px solid #00563B;
-        }
     </style>
     """, unsafe_allow_html=True)
 
-# --- Robust API Wrapper (Auto-Retry) ---
-def generate_content_safe(model_instance, prompt, is_json=False):
+# --- Utility Functions ---
+
+def generate_content_safe(model_instance, content, is_json=False):
     """
-    Wraps the Gemini API call with exponential backoff.
-    It will retry 5 times before failing.
+    Prevents the app from crashing on 'ResourceExhausted' errors.
+    Retries up to 3 times before giving up.
     """
     config = {"response_mime_type": "application/json"} if is_json else {}
     
-    max_retries = 5
-    base_delay = 2 # Start with 2 seconds wait
-    
+    max_retries = 3
     for attempt in range(max_retries):
         try:
-            response = model_instance.generate_content(prompt, generation_config=config)
-            return response
+            return model_instance.generate_content(content, generation_config=config)
         except (ResourceExhausted, ServiceUnavailable):
-            # Calculate wait time: 2s, 4s, 8s, 16s, 32s
-            wait_time = base_delay * (2 ** attempt)
-            st.toast(f"System Busy: Retrying in {wait_time} seconds...", icon="⏳")
-            time.sleep(wait_time)
+            if attempt < max_retries - 1:
+                time.sleep(5) # Wait 5 seconds and try again
+                continue
+            else:
+                st.error("⚠️ System Busy: The AI service is currently overloaded. Please wait a minute and try again.")
+                return None
         except Exception as e:
-            st.error(f"⚠️ System Error: {str(e)}")
+            st.error(f"System Error: {e}")
             return None
-            
-    st.error("⚠️ Connection Timeout: The AI service is currently experiencing heavy traffic. Please try again in 2 minutes.")
     return None
 
-def get_text_from_response(response):
-    if response and hasattr(response, 'text'):
+def get_gemini_text_safe(response):
+    """Safely extracts text from a Gemini response."""
+    if not response:
+        return ""
+    try:
         return response.text
-    return ""
+    except ValueError:
+        return "⚠️ Error: Blocked or empty response."
 
 def detect_speakers(text):
     if not text:
@@ -167,8 +116,8 @@ def detect_speakers(text):
 def generate_capital_estates_minutes(structured):
     now = datetime.now()
     
-    def get(val, default="Not stated"):
-        return val if val and val != "Not stated" else default
+    def get(val, default="Not mentioned"):
+        return val if val and val != "Not mentioned" else default
 
     def bullets(val):
         if isinstance(val, list) and val:
@@ -177,18 +126,19 @@ def generate_capital_estates_minutes(structured):
         elif isinstance(val, str) and val.strip():
             return f"• {val}\n"
         else:
-            return "None recorded\n"
+            return "Not mentioned\n"
 
-    # Fields mapping (Matches HSE Template)
+    # Fields mapping
     meeting_title = get(structured.get("meetingTitle"), "Capital & Estates Meeting")
     meeting_date = get(structured.get("meetingDate"), now.strftime("%d/%m/%Y"))
-    start_time = get(structured.get("startTime"), "00:00")
-    end_time = get(structured.get("endTime"), "00:00")
+    start_time = get(structured.get("startTime"), now.strftime("%H:%M"))
+    end_time = get(structured.get("endTime"), now.strftime("%H:%M"))
     location = get(structured.get("location"))
     chairperson = get(structured.get("chairperson"))
     minute_taker = get(structured.get("minuteTaker"))
     attendees = structured.get("attendees", [])
     apologies = structured.get("apologies", [])
+    previous_meeting_date = get(structured.get("previousMeetingDate"))
     matters_arising = structured.get("mattersArising", [])
     declarations_of_interest = get(structured.get("declarationsOfInterest"), "None declared.")
     major_projects = structured.get("majorProjects", [])
@@ -199,10 +149,14 @@ def generate_capital_estates_minutes(structured):
     finance_update = structured.get("financeUpdate", [])
     aob = structured.get("aob", [])
     next_meeting_date = get(structured.get("nextMeetingDate"))
+    meeting_closed_time = get(structured.get("meetingClosedTime"), end_time)
+    minutes_prepared_by = get(structured.get("minutesPreparedBy"), minute_taker or "Not mentioned")
+    preparation_date = get(structured.get("preparationDate"), now.strftime("%d/%m/%Y"))
 
     template = f"""HSE Capital & Estates Meeting Minutes
 Meeting Title: {meeting_title}
-Date: {meeting_date} | Time: {start_time} - {end_time}
+Date: {meeting_date}
+Time: {start_time} - {end_time}
 Location: {location}
 Chairperson: {chairperson}
 Minute Taker: {minute_taker}
@@ -213,16 +167,18 @@ Present:
 Apologies:
 {bullets(apologies)}
 ________________________________________
-2. Minutes of Previous Meeting / Matters Arising
+2. Minutes of Previous Meeting
+• Confirmation of previous meeting minutes held on {previous_meeting_date}.
+• Matters Arising:
 {bullets(matters_arising)}
 ________________________________________
 3. Declarations of Interest
 • {declarations_of_interest}
 ________________________________________
 4. Capital Projects Update
-4.1 Major Projects (Capital)
+4.1 Major Projects (over €X million)
 {bullets(major_projects)}
-4.2 Minor Works / Equipment / ICT
+4.2 Minor Works / Equipment / ICT Projects
 {bullets(minor_projects)}
 ________________________________________
 5. Estates Strategy and Planning
@@ -243,7 +199,9 @@ ________________________________________
 10. Date of Next Meeting
 • {next_meeting_date}
 ________________________________________
-Minutes Approved By: ____________________ Date: ___________
+Meeting Closed at: {meeting_closed_time}
+Minutes Prepared by: {minutes_prepared_by}
+Date: {preparation_date}
 """
     return template
 
@@ -259,7 +217,7 @@ def create_docx(content, kind="minutes"):
             elif line.strip():
                 doc.add_paragraph(line)
     else:
-        doc.add_heading("Executive Briefing Note", level=1)
+        doc.add_heading("Meeting Briefing / Overview", level=1)
         doc.add_paragraph(content)
     output = io.BytesIO()
     doc.save(output)
@@ -270,16 +228,15 @@ def create_docx(content, kind="minutes"):
 st.set_page_config(page_title="MAI Recap Pro", layout="wide", page_icon="🏥")
 inject_custom_css()
 
-# --- API Config ---
 try:
     if "GEMINI_API_KEY" in st.secrets:
         genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
         model = genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
     else:
-        st.error("System Configuration Error: API Key missing.")
+        st.error("GEMINI_API_KEY not found in Streamlit secrets.")
         st.stop()
 except Exception as e:
-    st.error(f"Configuration Error: {e}")
+    st.error(f"Error configuring Gemini API: {e}")
     st.stop()
 
 # --- Authentication ---
@@ -289,21 +246,26 @@ if "password_verified" not in st.session_state:
 if not st.session_state.password_verified:
     col1, col2, col3 = st.columns([1,2,1])
     with col2:
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=150)
-        st.markdown("### MAI Recap Pro")
-        st.caption("Capital & Estates Secure Login")
-        
+        st.markdown(
+            """
+            <div style="text-align: center;">
+                <img src="https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png" width="100">
+                <h2>MAI Recap Access</h2>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+        st.info("Restricted Access: HSE Capital & Estates AI Tool")
         with st.form("password_form"):
-            user_password = st.text_input("Authorisation Code", type="password")
-            if st.form_submit_button("Log In"):
+            user_password = st.text_input("Authorisation Code:", type="password")
+            if st.form_submit_button("Secure Login"):
                 if st.secrets.get("password") and user_password == st.secrets["password"]:
                     st.session_state.password_verified = True
                     st.rerun()
                 elif not st.secrets.get("password"):
-                     st.warning("System Config: Password not set.")
+                     st.warning("Password not configured in secrets.toml.")
                 else:
-                    st.error("Incorrect authorisation code.")
+                    st.error("Invalid credentials.")
     st.stop()
 
 # --- Application State ---
@@ -312,26 +274,33 @@ if "transcript" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- Sidebar ---
+# --- Sidebar Controls ---
 with st.sidebar:
-    st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=160)
+    st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=180)
     st.markdown("### System Status")
     st.success("Online: Cork Region")
     
     st.markdown("---")
-    if st.button("New Session / Reset", type="secondary"):
+    
+    st.markdown("### Session Tools")
+    if st.button("New Meeting / Reset", type="primary"):
         for key in list(st.session_state.keys()):
             if key != 'password_verified':
                 del st.session_state[key]
         st.rerun()
+        
+    st.markdown("---")
     
-    # Speaker Mapping
+    # --- SPEAKER MAPPING LOGIC ---
     if st.session_state.get("transcript"):
-        st.markdown("---")
-        st.markdown("**Speaker Identification**")
+        st.subheader("Speaker Identification")
+        st.info("Map generic IDs (Speaker 1) to real names here.")
+        
         detected_speakers = detect_speakers(st.session_state["transcript"])
         
-        if detected_speakers:
+        if not detected_speakers:
+            st.caption("No speaker labels detected.")
+        else:
             with st.form("speaker_map_form"):
                 replacements = {}
                 for spk in detected_speakers:
@@ -339,150 +308,144 @@ with st.sidebar:
                     if new_name and new_name != spk:
                         replacements[spk] = new_name
                 
-                if st.form_submit_button("Update Transcripts"):
+                if st.form_submit_button("Update Transcript"):
                     txt = st.session_state["transcript"]
                     count = 0
                     for old, new in replacements.items():
-                        txt = txt.replace(f"{old}:", f"{new}:")
-                        txt = txt.replace(f"**{old}**", f"**{new}**")
+                        if f"{old}:" in txt:
+                            txt = txt.replace(f"{old}:", f"{new}:")
+                            count += 1
+                        elif f"**{old}**:" in txt:
+                            txt = txt.replace(f"**{old}**:", f"**{new}**:")
+                            count += 1
+                        elif f"**{old}**" in txt:
+                             txt = txt.replace(f"**{old}**", f"**{new}**")
+                             count += 1
+
                     st.session_state["transcript"] = txt
                     st.rerun()
 
-# --- Header ---
-c_logo, c_title = st.columns([1, 6])
-with c_logo:
-     # Standard HSE logo, no inversion filter
-    st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=100)
-with c_title:
+# --- Main Layout ---
+col_logo, col_title = st.columns([1, 5])
+with col_logo:
+    st.image("https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png", width=80)
+with col_title:
     st.title("MAI Recap Pro")
-    st.markdown("Capital & Estates | Automated Documentation System")
+    st.caption("HSE Automated Documentation System")
 
-st.markdown("<hr style='border-top: 2px solid #00563B; margin-top: -10px;'>", unsafe_allow_html=True)
-
-# --- Step 1: Input ---
+# --- Step 1: Input & Processing ---
 if not st.session_state["transcript"]:
+    st.markdown("### 1. Meeting Source")
     
-    # Context Box (Clean Grey)
-    with st.container():
-        st.markdown("**Meeting Context** (Optional)")
-        st.markdown("Providing names and topics helps the system identify speakers and acronyms correctly.")
+    with st.expander("Provide Context (Optional)", expanded=True):
         context_info = st.text_area(
-            "Details",
-            placeholder="e.g. Chair: Sarah O'Brien. Attendees: Mr. Murphy, Dr. Smith. Topic: Mallow General Hospital Extension.",
-            height=80,
-            label_visibility="collapsed"
+            "Context & Attendees:",
+            placeholder="e.g., Present: Dr. Smith, Mr. Murphy. Chair: Sarah O'Brien. Topic: Budget Review.",
+            help="Providing names here helps the AI identify speakers correctly."
         )
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    
     tab_rec, tab_up = st.tabs(["Audio Recording", "File Upload"])
     
     audio_bytes = None
     
     with tab_rec:
-        recorded_audio = st.audio_input("Microphone Input")
+        recorded_audio = st.audio_input("Record Microphone")
         if recorded_audio:
             st.audio(recorded_audio)
             audio_bytes = recorded_audio
 
     with tab_up:
-        uploaded_audio = st.file_uploader("Select Audio File (MP3, WAV, M4A)", type=["wav", "mp3", "m4a", "ogg"])
+        uploaded_audio = st.file_uploader("Upload Audio (MP3, WAV, M4A)", type=["wav", "mp3", "m4a", "ogg"])
         if uploaded_audio:
             st.audio(uploaded_audio)
             audio_bytes = uploaded_audio
 
-    if audio_bytes:
-        if st.button("Process Audio"):
-            with st.status("System Processing...", expanded=True) as status:
-                try:
-                    # 1. Temp File
-                    status.write("Encrypting and preparing file...")
-                    if hasattr(audio_bytes, "read"):
-                        audio_bytes.seek(0)
-                        data = audio_bytes.read()
+    if audio_bytes and st.button("Process Meeting"):
+        with st.status("Processing Meeting Audio...", expanded=True) as status:
+            try:
+                # 1. Prepare File
+                status.write("Preparing audio file...")
+                if hasattr(audio_bytes, "read"):
+                    audio_bytes.seek(0)
+                    data = audio_bytes.read()
+                else:
+                    data = audio_bytes
+                
+                suffix = ".wav"
+                if hasattr(audio_bytes, 'name'):
+                    _, ext = os.path.splitext(audio_bytes.name)
+                    if ext: suffix = ext
+                
+                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                    tmp.write(data)
+                    tmp_path = tmp.name
+
+                # 2. Upload to Gemini
+                status.write(f"Uploading to {GEMINI_MODEL_NAME}...")
+                gemini_file = genai.upload_file(path=tmp_path)
+                
+                while gemini_file.state.name == "PROCESSING":
+                    time.sleep(2)
+                    gemini_file = genai.get_file(gemini_file.name)
+                
+                if gemini_file.state.name == "FAILED":
+                    status.update(label="Audio processing failed", state="error")
+                    st.stop()
+
+                # 3. Transcribe
+                status.write("Transcribing...")
+                context_prompt = f"Context/Attendees: {context_info}" if context_info else ""
+                
+                prompt = f"""
+                You are a professional transcriber for HSE Capital & Estates.
+                {context_prompt}
+                Task: Transcribe the audio using strict Irish/UK English spelling (e.g. 'Analysing', 'Programme', 'Centre').
+                Format: Use '**Speaker Name**:' (bolded) followed by text. 
+                If you cannot identify the name, use '**Speaker 1**:', '**Speaker 2**:', etc.
+                Currency: Always use Euro (€).
+                Do not summarise yet, provide the full dialogue.
+                """
+                
+                # --- SAFE CALL ---
+                res = generate_content_safe(model, [prompt, gemini_file])
+                
+                if res:
+                    text = get_gemini_text_safe(res)
+                    if "⚠️" in text:
+                        status.update(label="AI Safety Block Triggered", state="error")
+                        st.error(text)
                     else:
-                        data = audio_bytes
-                    
-                    suffix = ".wav"
-                    if hasattr(audio_bytes, 'name'):
-                        _, ext = os.path.splitext(audio_bytes.name)
-                        if ext: suffix = ext
-                    
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                        tmp.write(data)
-                        tmp_path = tmp.name
-
-                    # 2. Upload
-                    status.write("Transmitting to secure processing engine...")
-                    gemini_file = genai.upload_file(path=tmp_path)
-                    
-                    while gemini_file.state.name == "PROCESSING":
-                        import time
-                        time.sleep(2)
-                        gemini_file = genai.get_file(gemini_file.name)
-                    
-                    if gemini_file.state.name == "FAILED":
-                        status.update(label="Processing Failed", state="error")
-                        st.stop()
-
-                    # 3. Transcribe
-                    status.write("Generating transcription...")
-                    context_prompt = f"Context: {context_info}" if context_info else ""
-                    
-                    # PROMPT: Strict Irish/UK English
-                    prompt = f"""
-                    You are a professional transcriber for HSE Capital & Estates Ireland.
-                    {context_prompt}
-                    Task: Transcribe the audio.
-                    Language: Strict UK/Irish English spelling (e.g., 'Programme', 'Paediatric', 'Centre', 'Analysing').
-                    Format: Use '**Speaker Name**:' followed by text.
-                    Currency: Euro (€).
-                    Speaker IDs: If unknown, use 'Speaker 1', 'Speaker 2'.
-                    """
-                    
-                    # Call API with Try/Except wrapper
-                    res = generate_content_safe(model, [prompt, gemini_file])
-                    
-                    if res:
-                        text = get_text_from_response(res)
                         st.session_state["transcript"] = text
-                        status.update(label="Complete", state="complete", expanded=False)
+                        status.update(label="Complete!", state="complete", expanded=False)
                         st.rerun()
-                    else:
-                        status.update(label="System Busy", state="error")
+                else:
+                    status.update(label="Service Busy", state="error")
 
-                except Exception as e:
-                    status.update(label="Error", state="error")
-                    st.error(f"Details: {e}")
-                finally:
-                    if 'gemini_file' in locals():
-                        try: genai.delete_file(gemini_file.name)
-                        except: pass
-                    if os.path.exists(tmp_path):
-                        os.remove(tmp_path)
+            except Exception as e:
+                status.update(label="System Error", state="error")
+                st.error(f"Error details: {e}")
+            finally:
+                if 'gemini_file' in locals():
+                    try: genai.delete_file(gemini_file.name)
+                    except: pass
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
 
-# --- Step 2: Output ---
+# --- Step 2: Post-Processing Interface ---
 else:
-    # Dashboard Metrics
     word_count = len(st.session_state["transcript"].split())
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Word Count", f"{word_count:,}")
-    c2.metric("Date", datetime.now().strftime("%d %b %Y"))
-    c3.metric("Status", "Active Session")
+    st.success(f"Transcript Ready ({word_count} words).")
     
-    st.markdown("<br>", unsafe_allow_html=True)
+    t1, t2, t3, t4 = st.tabs(["Edit Transcript", "Minutes Generator", "Briefing & Insights", "Chat Agent"])
 
-    t1, t2, t3, t4 = st.tabs(["Transcript", "Minutes Generator", "Executive Briefing", "Q&A Assistant"])
-
-    # --- TAB 1: TRANSCRIPT ---
+    # --- TAB 1: EDIT TRANSCRIPT ---
     with t1:
-        st.markdown("#### Transcript Source")
+        st.subheader("Transcript Editor")
         edited_text = st.text_area(
-            "Editor", 
+            "Transcript Content:", 
             value=st.session_state["transcript"], 
             height=600,
-            key="transcript_editor",
-            label_visibility="collapsed"
+            key="transcript_editor"
         )
         if edited_text != st.session_state["transcript"]:
             st.session_state["transcript"] = edited_text
@@ -490,35 +453,39 @@ else:
 
     # --- TAB 2: MINUTES ---
     with t2:
-        col_act, col_prev = st.columns([1, 2])
+        col_act, col_prev = st.columns([1, 1])
         with col_act:
-            st.info("Parse transcript into standard HSE template.")
-            if st.button("Generate Minutes"):
-                with st.spinner("Processing..."):
+            st.markdown("##### Action")
+            if st.button("Generate Minutes", type="primary"):
+                with st.spinner("Structuring minutes..."):
                     prompt_minutes = f"""
                     You are an expert secretary for HSE Capital & Estates.
-                    Extract structured data from this transcript.
-                    Language: Irish/UK English. Currency: Euro (€).
+                    Extract detailed structured data from this transcript (Irish/UK English spelling).
+                    Dates: DD/MM/YYYY. Currency: Euro (€).
                     Return valid JSON only.
                     TRANSCRIPT:
                     {st.session_state['transcript']}
                     """
-                    # Robust API Call
+                    # --- SAFE CALL ---
                     res = generate_content_safe(model, prompt_minutes, is_json=True)
                     
                     if res:
-                        text_response = get_text_from_response(res)
+                        text_response = get_gemini_text_safe(res)
                         try:
                             structured = json.loads(text_response)
                             if isinstance(structured, list): structured = structured[0]
                             st.session_state["minutes_text"] = generate_capital_estates_minutes(structured)
-                        except json.JSONDecodeError:
-                            st.error("Error parsing AI response. Please try again.")
+                        except Exception as e:
+                            st.error(f"Generation Error: {e}")
 
-        with col_prev:
-            if "minutes_text" in st.session_state:
-                st.markdown("#### Preview")
-                st.text_area("Draft", st.session_state["minutes_text"], height=500, label_visibility="collapsed")
+        if "minutes_text" in st.session_state:
+            st.markdown("---")
+            c1, c2 = st.columns([3, 1])
+            with c1:
+                st.subheader("Draft Minutes")
+                st.text_area("Final Output (Editable)", st.session_state["minutes_text"], height=800)
+            with c2:
+                st.subheader("Export")
                 st.download_button(
                     "Download DOCX",
                     create_docx(st.session_state["minutes_text"]),
@@ -526,50 +493,50 @@ else:
                     "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 )
 
-    # --- TAB 3: BRIEFING ---
+    # --- TAB 3: INSIGHTS ---
     with t3:
-        if st.button("Generate Briefing Note"):
-            with st.status("Analysing strategic points..."):
+        if st.button("Generate Briefing Doc"):
+            with st.status("Analysing dynamics..."):
                 p_insight = f"""
-                Create a high-level "Executive Briefing Note" from this transcript.
-                Language: Irish/UK English. Currency: Euro (€).
-                Include: Executive Summary, Strategic Decisions, Action Items, Risk Analysis.
+                Create a high-level "Briefing Document" (Markdown) from this transcript using Irish/UK English (e.g. Analysing, Centre).
+                Currency: Euro (€).
+                Include: Executive Summary, Key Strategic Decisions, Action Items, Risks.
                 TRANSCRIPT: {st.session_state['transcript']}
                 """
-                # Robust API Call
+                # --- SAFE CALL ---
                 res = generate_content_safe(model, p_insight)
                 if res:
-                    st.session_state["briefing"] = get_text_from_response(res)
+                    st.session_state["briefing"] = get_gemini_text_safe(res)
 
         if "briefing" in st.session_state:
             st.markdown(st.session_state["briefing"])
             st.download_button("Download Briefing DOCX", create_docx(st.session_state["briefing"], "overview"), "Briefing.docx")
 
-    # --- TAB 4: ASSISTANT ---
+    # --- TAB 4: CHAT ---
     with t4:
-        st.markdown("#### Meeting Assistant")
+        st.subheader("Chat with the Meeting")
         
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
                 st.markdown(msg["content"])
 
-        if prompt := st.chat_input("Query transcript..."):
+        if prompt := st.chat_input("Ask a question about the meeting..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
                 st.markdown(prompt)
 
             with st.chat_message("assistant"):
                 p_chat = f"""
-                Answer strictly based on the transcript provided below.
-                Language: Irish/UK English. Currency: Euro (€).
+                Answer strictly based on the transcript provided below. Use Irish/UK English spelling.
+                Currency: Euro (€).
                 TRANSCRIPT: {st.session_state['transcript']}
                 QUESTION: {prompt}
                 """
                 with st.spinner("Thinking..."):
-                    # Robust API Call
+                    # --- SAFE CALL ---
                     res = generate_content_safe(model, p_chat)
                     if res:
-                        response = get_text_from_response(res)
+                        response = get_gemini_text_safe(res)
                         st.markdown(response)
                         st.session_state.messages.append({"role": "assistant", "content": response})
 
