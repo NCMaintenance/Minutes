@@ -15,12 +15,6 @@ GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
 LOGO_URL = "https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png"
 
 # --- Utility Functions ---
-def prettify_key(key):
-    """Converts camelCase to Title Case."""
-    key = key.replace('_', ' ')
-    key = re.sub(r'([a-z])([A-Z])', r'\1 \2', key)
-    return key.title() + ":"
-
 def retry_api_call(func, *args, **kwargs):
     """
     Executes a Gemini API call with exponential backoff.
@@ -32,12 +26,11 @@ def retry_api_call(func, *args, **kwargs):
     for attempt in range(max_retries):
         try:
             return func(*args, **kwargs)
-        except (ResourceExhausted, ServiceUnavailable) as e:
+        except (ResourceExhausted, ServiceUnavailable):
             wait_time = base_delay * (2 ** attempt)
             st.toast(f"System Busy (Attempt {attempt+1}/{max_retries}). Retrying in {wait_time}s...", icon="⏳")
             time.sleep(wait_time)
         except Exception as e:
-            # If it's a different error, fail immediately
             raise e
             
     raise Exception("Server is too busy. Please try again in a few minutes.")
@@ -159,6 +152,7 @@ st.markdown("""
     h1, h2, h3, h4 { color: #00563B !important; }
     .stButton > button { background-color: #00563B !important; color: white !important; }
     div[data-testid="stSidebar"] { background-color: #f8f9fa; }
+    .stInfo { background-color: #e8f5e9; color: #00563B; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -207,7 +201,7 @@ with st.sidebar:
         st.rerun()
 
     st.markdown("---")
-    st.markdown("**Version:** 3.4 (Stable)")
+    st.markdown("**Version:** 3.5 (Stable)")
     st.info("System optimized for UK/Irish English and Capital & Estates terminology.")
 
 # --- Main UI Header ---
@@ -266,10 +260,14 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
             tmp_file_path = tmp_file.name
         
         try:
-            # Upload to Gemini
-            audio_file = genai.upload_file(path=tmp_file_path)
+            # 1. Upload to Gemini (with Display Name)
+            st.info("Uploading audio to secure server...")
+            audio_file = genai.upload_file(path=tmp_file_path, display_name="HSE_Meeting_Audio")
             
-            # Wait for processing
+            # --- USER REQUESTED CONFIRMATION MESSAGE ---
+            st.success(f"Audio uploaded successfully: {audio_file.name}")
+            
+            # 2. Wait for processing
             while audio_file.state.name == "PROCESSING":
                 time.sleep(2)
                 audio_file = genai.get_file(audio_file.name)
@@ -278,7 +276,7 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
                 st.error("Audio processing failed on server.")
                 st.stop()
 
-            # Prompt
+            # 3. Prompt
             context_str = f"Context: {context_info}" if context_info else ""
             prompt = f"""
             You are a professional transcriber for HSE Capital & Estates.
@@ -289,8 +287,7 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
             Speaker IDs: If unknown, use 'Speaker 1', 'Speaker 2'.
             """
             
-            # EXECUTING WITH RETRY LOGIC & TIMEOUT
-            # This is the "fix" combined with the Golf Club method
+            # 4. Generate with Retry & Timeout (Fixes crashes)
             response = retry_api_call(
                 model.generate_content, 
                 [prompt, audio_file], 
@@ -298,14 +295,23 @@ if audio_bytes and st.button("🧠 Transcribe Audio"):
             )
             
             st.session_state["transcript"] = response.text
-            st.success("Transcription Complete.")
+            
+            # --- USER REQUESTED SUCCESS MESSAGE ---
+            st.success("Transcript generated successfully.")
 
         except Exception as e:
             st.error(f"Error: {e}")
+            
         finally:
-            if 'audio_file' in locals():
-                try: genai.delete_file(audio_file.name)
-                except: pass
+            # 5. Cleanup with Explicit Message
+            if 'audio_file' in locals() and audio_file:
+                try:
+                    genai.delete_file(audio_file.name)
+                    # --- USER REQUESTED CLEANUP MESSAGE ---
+                    st.info(f"Cleaned up uploaded file: {audio_file.name}")
+                except Exception as del_e:
+                    pass # Fail silently if already deleted, but dont show error
+                    
             if os.path.exists(tmp_file_path):
                 os.remove(tmp_file_path)
 
