@@ -11,7 +11,7 @@ import re
 
 # --- Configuration ---
 # Using flash for speed, but handling quota errors gracefully
-GEMINI_MODEL_NAME = 'gemini-3.0-flash-prieview' 
+GEMINI_MODEL_NAME = 'gemini-3-flash-prieview' 
 
 # --- Custom CSS: HSE Corporate Theme (Clean, Green, Clinical) ---
 def inject_custom_css():
