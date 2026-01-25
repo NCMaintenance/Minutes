@@ -1,8 +1,9 @@
 import streamlit as st
 import google.generativeai as genai
-from google.api_core.exceptions import ResourceExhausted
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 import json
 import os
+import time
 from datetime import datetime
 from docx import Document
 import io
@@ -10,8 +11,7 @@ import tempfile
 import re
 
 # --- Configuration ---
-# Using flash for speed, but handling quota errors gracefully
-GEMINI_MODEL_NAME = 'gemini-3-flash-preview' 
+GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
 
 # --- Custom CSS: HSE Corporate Theme (Clean, Green, Clinical) ---
 def inject_custom_css():
@@ -122,22 +122,32 @@ def inject_custom_css():
     </style>
     """, unsafe_allow_html=True)
 
-# --- Robust API Wrapper (Fixes the Error) ---
+# --- Robust API Wrapper (Auto-Retry) ---
 def generate_content_safe(model_instance, prompt, is_json=False):
     """
-    Wraps the Gemini API call to catch quota errors and return user-friendly messages.
+    Wraps the Gemini API call with exponential backoff.
+    It will retry 5 times before failing.
     """
     config = {"response_mime_type": "application/json"} if is_json else {}
     
-    try:
-        response = model_instance.generate_content(prompt, generation_config=config)
-        return response
-    except ResourceExhausted:
-        st.error("⚠️ System Busy: The AI processing limit has been reached. Please wait 30-60 seconds and try again.")
-        return None
-    except Exception as e:
-        st.error(f"⚠️ System Error: {str(e)}")
-        return None
+    max_retries = 5
+    base_delay = 2 # Start with 2 seconds wait
+    
+    for attempt in range(max_retries):
+        try:
+            response = model_instance.generate_content(prompt, generation_config=config)
+            return response
+        except (ResourceExhausted, ServiceUnavailable):
+            # Calculate wait time: 2s, 4s, 8s, 16s, 32s
+            wait_time = base_delay * (2 ** attempt)
+            st.toast(f"System Busy: Retrying in {wait_time} seconds...", icon="⏳")
+            time.sleep(wait_time)
+        except Exception as e:
+            st.error(f"⚠️ System Error: {str(e)}")
+            return None
+            
+    st.error("⚠️ Connection Timeout: The AI service is currently experiencing heavy traffic. Please try again in 2 minutes.")
+    return None
 
 def get_text_from_response(response):
     if response and hasattr(response, 'text'):
