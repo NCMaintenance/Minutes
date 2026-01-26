@@ -15,6 +15,7 @@ from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, Pe
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
 TTS_MODEL_NAME = 'gemini-2.5-flash-preview-tts'
 LOGO_URL = "https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png"
+FAVICON_URL = "https://assets.hse.ie/static/hse-frontend/assets/favicons/favicon.ico"
 
 # --- API Key Management ---
 def get_available_keys():
@@ -38,28 +39,23 @@ def configure_genai_with_current_key():
     genai.configure(api_key=keys[st.session_state.key_index])
     return genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
 
-# --- Helper: Safe Response Extractor (Fixes the Crash) ---
+# --- Helper: Safe Response Extractor ---
 def safe_get_text(response):
-    """
-    Safely extracts text from response, handling cases where
-    response.text throws an error even if finish_reason is 1.
-    """
     try:
-        # Check if candidates exist
-        if not response.candidates:
-            return None
-        
-        # Check first candidate
+        if not response.candidates: return None
         candidate = response.candidates[0]
-        
-        # If there are parts, return text
-        if candidate.content.parts:
-            return candidate.content.parts[0].text
-            
-        # If finish reason is safety/other, return None to trigger retry/error handling
+        if candidate.content.parts: return candidate.content.parts[0].text
         return None
-    except Exception:
-        return None
+    except Exception: return None
+
+# --- Helper: Detect Speakers ---
+def detect_speakers(text):
+    """Finds speaker labels like '**Speaker 1**:' or 'Speaker 1:'"""
+    if not text: return []
+    # Regex for bolded or plain speaker labels at start of lines
+    pattern = r'(?m)^(?:[\*\_]{2})?([A-Za-z0-9\s\(\)\-\.]+?)(?:[\*\_]{2})?[:]'
+    matches = re.findall(pattern, text)
+    return sorted(list(set(matches)))
 
 # --- Helper: Add WAV Header ---
 def add_wav_header(pcm_data, sample_rate=24000, channels=1, bit_depth=16):
@@ -83,14 +79,13 @@ def process_audio_with_rotation(tmp_file_path, context_info):
     base_delay = 1
     keys = get_available_keys()
     
-    # NEUTRAL PROMPT - CLEAN TRANSCRIPT ONLY
     context_str = f"Context: {context_info}" if context_info else ""
     prompt = f"""
-    You are a precise transcription engine.
+    You are a precise transcription engine for the Health Service Executive (HSE) Ireland.
     {context_str}
     Task: Output the raw transcription of this audio. 
     Constraint: Do NOT include preamble like "Here is the transcript". Do NOT include markdown blocks. Just the dialogue.
-    Language: British/Irish English spelling (e.g. 'Programme', 'Paediatric').
+    Language: Strict Irish English spelling (e.g. 'Programme', 'Paediatric', 'Centre', 'Realise', 'Colour').
     Format:
     **Speaker Name**: Text...
     **Speaker Name**: Text...
@@ -100,40 +95,29 @@ def process_audio_with_rotation(tmp_file_path, context_info):
         audio_file = None
         try:
             model = configure_genai_with_current_key()
-            
-            # Upload
             if attempt > 0: st.toast(f"Retry {attempt}...", icon="🔄")
             audio_file = genai.upload_file(path=tmp_file_path, display_name="HSE_Audio")
             
-            # Wait
             while audio_file.state.name == "PROCESSING":
                 time.sleep(2)
                 audio_file = genai.get_file(audio_file.name)
             
             if audio_file.state.name == "FAILED": raise Exception("Audio processing failed.")
 
-            # Generate
             response = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
-            
-            # Safe Extract
             text = safe_get_text(response)
             
-            # Cleanup
             try: genai.delete_file(audio_file.name)
             except: pass
             
-            if text:
-                return text
-            else:
-                # If text is empty/invalid, force an error to trigger retry
-                raise Exception("Empty response from AI")
+            if text: return text
+            else: raise Exception("Empty response from AI")
 
         except Exception as e:
             if audio_file:
                 try: genai.delete_file(audio_file.name)
                 except: pass
             
-            # Rotate key
             st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
             time.sleep(base_delay * (1.5 ** attempt))
             
@@ -150,11 +134,9 @@ def robust_text_gen(prompt):
             response = model.generate_content(prompt, request_options={"timeout": 600})
             text = safe_get_text(response)
             if text: return text
-            # If text empty, fall through to rotate
         except Exception:
             pass
         
-        # Rotate
         st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
         time.sleep(1)
         
@@ -252,7 +234,7 @@ def create_docx(content, kind="minutes"):
     return output
 
 # --- Setup ---
-st.set_page_config(page_title="HSE MAI Recap", layout="wide", page_icon="🏥")
+st.set_page_config(page_title="HSE MAI Recap", layout="wide", page_icon=FAVICON_URL)
 st.markdown("""
 <style>
     h1, h2, h3, h4 { color: #00563B !important; }
@@ -298,14 +280,48 @@ if "transcript" not in st.session_state: st.session_state.transcript = ""
 with st.sidebar:
     st.image(LOGO_URL, width="stretch")
     st.title("MAI Recap Pro")
+    
+    # 1. Reset
     if st.button("🔄 New Meeting / Reset"):
         for key in list(st.session_state.keys()):
             if key not in ['password_verified', 'key_index']: del st.session_state[key]
         st.rerun()
+    
+    st.markdown("---")
+    
+    # 2. Context Input (Moved here)
+    st.markdown("### ℹ️ Meeting Context")
+    context_info = st.text_area("Details (Chair, Topics):", placeholder="e.g. Chair: Sarah. Topic: Budget.", height=80)
+    
+    # 3. Speaker Renaming (Visible only when transcript exists)
+    if st.session_state.transcript:
+        st.markdown("---")
+        st.markdown("### 👥 Speaker ID Manager")
+        detected = detect_speakers(st.session_state.transcript)
+        if detected:
+            with st.form("speaker_update_form"):
+                replacements = {}
+                for spk in detected:
+                    new_name = st.text_input(f"Rename '{spk}':", placeholder=spk)
+                    if new_name and new_name != spk:
+                        replacements[spk] = new_name
+                
+                if st.form_submit_button("Update Transcript"):
+                    txt = st.session_state.transcript
+                    for old, new in replacements.items():
+                        # Replace "**Speaker 1**:" and "Speaker 1:" patterns
+                        txt = txt.replace(f"**{old}**", f"**{new}**")
+                        txt = txt.replace(f"{old}:", f"{new}:")
+                    st.session_state.transcript = txt
+                    st.toast("Transcript updated with new names!", icon="✅")
+                    st.rerun()
+        else:
+            st.caption("No speakers detected yet.")
+
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.0 (NotebookLM Style)")
+    st.markdown("**Version:** 5.2 (Side Context)")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
@@ -324,9 +340,6 @@ else:
     audio_bytes = st.audio_input("🎙️ Record")
     if audio_bytes: st.audio(audio_bytes)
 
-with st.expander("ℹ️ Context (Optional)"):
-    context_info = st.text_area("Context:", placeholder="e.g. Chair: Sarah. Topic: Budget.", height=60)
-
 if audio_bytes and st.button("🧠 Transcribe"):
     with st.spinner("Processing..."):
         if hasattr(audio_bytes, "read"): data = audio_bytes.read()
@@ -337,6 +350,7 @@ if audio_bytes and st.button("🧠 Transcribe"):
             tmp_path = tmp.name
         
         try:
+            # Pass sidebar context info
             transcript_text = process_audio_with_rotation(tmp_path, context_info)
             st.session_state["transcript"] = transcript_text
             st.success("Transcription Complete.")
@@ -359,7 +373,8 @@ if st.session_state.transcript:
         if st.button("Generate Minutes", key="btn_min"):
             with st.spinner("Extracting..."):
                 prompt = f"""
-                Extract structured data from transcript (JSON). UK English.
+                Extract structured data from transcript (JSON). 
+                Language: Strict Irish English (e.g. 'Paediatric', 'Programme'). Currency: Euro.
                 Transcript: {st.session_state.transcript}
                 Keys: meetingTitle, meetingDate, startTime, endTime, location, chairperson, minuteTaker, attendees, apologies, mattersArising, declarationsOfInterest, majorProjects, minorProjects, estatesStrategy, healthSafety, riskRegister, financeUpdate, aob, nextMeetingDate.
                 """
@@ -381,6 +396,7 @@ if st.session_state.transcript:
             with st.spinner("Analyzing..."):
                 prompt = f"""
                 Write a neutral, matter-of-fact Executive Briefing based on this transcript.
+                Language: Strict Irish English spelling (e.g. 'Realise', 'Centre', 'Colour').
                 Do NOT use corporate fluff. Be candid and objective.
                 Sections: Executive Summary, Key Decisions, Critical Risks, Action Items.
                 Transcript: {st.session_state.transcript}
@@ -398,7 +414,8 @@ if st.session_state.transcript:
             with st.spinner("Writing script..."):
                 prompt = f"""
                 Convert this transcript into a podcast script between two hosts (Host and Expert).
-                Tone: Candid, neutral, analytical (Like NotebookLM). NOT corporate/PR.
+                Language: Irish English spelling and phrasing.
+                Tone: Candid, neutral, analytical (Like NotebookLM) but with Irish nuances. NOT corporate/PR.
                 They should discuss the meeting outcomes naturally, pointing out interesting dynamics or risks.
                 Transcript: {st.session_state.transcript}
                 """
@@ -429,8 +446,7 @@ if st.session_state.transcript:
             st.session_state.messages.append({"role": "user", "content": q})
             with st.chat_message("user"): st.markdown(q)
             with st.chat_message("assistant"):
-                prompt = f"Answer neutrally based on transcript: {st.session_state.transcript}\nQ: {q}"
+                prompt = f"Answer neutrally using Irish English spelling/grammar. Transcript: {st.session_state.transcript}\nQ: {q}"
                 ans = robust_text_gen(prompt)
                 st.markdown(ans)
                 st.session_state.messages.append({"role": "assistant", "content": ans})
-
