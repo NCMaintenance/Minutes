@@ -450,3 +450,11 @@ if st.session_state.transcript:
                 ans = robust_text_gen(prompt)
                 st.markdown(ans)
                 st.session_state.messages.append({"role": "assistant", "content": ans})
+# --- Footer ---
+st.markdown("---")
+st.markdown(
+    "**Disclaimer:** This implementation has been tested using sample data. "
+    "Adjustments may be required to ensure optimal performance and accuracy with real-world meeting audio. "
+    "Always verify the accuracy of transcriptions and minutes."
+)
+st.markdown("Created by Dave Maher | For HSE internal use.")
