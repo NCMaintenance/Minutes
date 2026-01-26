@@ -8,146 +8,138 @@ from docx import Document
 import io
 import tempfile
 import re
-import base64
-import struct  # Required for WAV header construction
+import struct
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
 
 # --- Configuration ---
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
-# TTS Model for Podcast Audio
-TTS_MODEL_NAME = 'gemini-2.5-flash-preview-tts' 
+TTS_MODEL_NAME = 'gemini-2.5-flash-preview-tts'
 LOGO_URL = "https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png"
 
 # --- API Key Management ---
 def get_available_keys():
-    """Retrieves all defined API keys from secrets."""
     keys = []
-    # Check for primary and backup keys
     key_names = ["GEMINI_API_KEY", "GEMINI_API_KEY2", "GEMINI_API_KEY3"]
     for name in key_names:
         if name in st.secrets:
             keys.append(st.secrets[name])
-    
     if not keys:
         st.error("No API Keys found in secrets. Please add GEMINI_API_KEY.")
         st.stop()
     return keys
 
-# Initialize Session State for Key Index if not present
 if "key_index" not in st.session_state:
     st.session_state.key_index = 0
 
 def configure_genai_with_current_key():
-    """Configures GenAI with the current active key."""
     keys = get_available_keys()
-    # Ensure index is within bounds
     if st.session_state.key_index >= len(keys):
         st.session_state.key_index = 0
-    
-    current_key = keys[st.session_state.key_index]
-    genai.configure(api_key=current_key)
+    genai.configure(api_key=keys[st.session_state.key_index])
     return genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
 
-# --- Helper: Add WAV Header to Raw PCM ---
+# --- Helper: Safe Response Extractor (Fixes the Crash) ---
+def safe_get_text(response):
+    """
+    Safely extracts text from response, handling cases where
+    response.text throws an error even if finish_reason is 1.
+    """
+    try:
+        # Check if candidates exist
+        if not response.candidates:
+            return None
+        
+        # Check first candidate
+        candidate = response.candidates[0]
+        
+        # If there are parts, return text
+        if candidate.content.parts:
+            return candidate.content.parts[0].text
+            
+        # If finish reason is safety/other, return None to trigger retry/error handling
+        return None
+    except Exception:
+        return None
+
+# --- Helper: Add WAV Header ---
 def add_wav_header(pcm_data, sample_rate=24000, channels=1, bit_depth=16):
-    """
-    Wraps raw PCM audio data in a valid WAV container header 
-    so browsers can play it.
-    """
     header = b'RIFF'
     header += struct.pack('<I', 36 + len(pcm_data))
     header += b'WAVEfmt '
-    header += struct.pack('<I', 16) # Size of fmt chunk
-    header += struct.pack('<H', 1)  # Format tag: 1 = PCM
+    header += struct.pack('<I', 16)
+    header += struct.pack('<H', 1)
     header += struct.pack('<H', channels)
     header += struct.pack('<I', sample_rate)
-    header += struct.pack('<I', sample_rate * channels * (bit_depth // 8)) # Byte rate
-    header += struct.pack('<H', channels * (bit_depth // 8)) # Block align
-    header += struct.pack('<H', bit_depth) # Bits per sample
+    header += struct.pack('<I', sample_rate * channels * (bit_depth // 8))
+    header += struct.pack('<H', channels * (bit_depth // 8))
+    header += struct.pack('<H', bit_depth)
     header += b'data'
     header += struct.pack('<I', len(pcm_data))
     return header + pcm_data
 
-# --- Robust Audio Processor (Transcribe) ---
+# --- Robust Audio Processor ---
 def process_audio_with_rotation(tmp_file_path, context_info):
-    """
-    Handles the entire flow: Upload -> Wait -> Generate -> Delete.
-    If ANY step fails (Quota or Permission), it rotates keys and RE-UPLOADS the file.
-    """
     max_retries = 6 
     base_delay = 1
     keys = get_available_keys()
     
+    # NEUTRAL PROMPT - CLEAN TRANSCRIPT ONLY
     context_str = f"Context: {context_info}" if context_info else ""
     prompt = f"""
-    You are a professional transcriber for HSE Capital & Estates.
+    You are a precise transcription engine.
     {context_str}
-    Task: Transcribe the audio using strict Irish/UK English spelling (e.g. 'Programme', 'Paediatric', 'Centre').
-    Format: Use '**Speaker Name**:' followed by text.
-    Currency: Euro (€).
-    Speaker IDs: If unknown, use 'Speaker 1', 'Speaker 2'.
+    Task: Output the raw transcription of this audio. 
+    Constraint: Do NOT include preamble like "Here is the transcript". Do NOT include markdown blocks. Just the dialogue.
+    Language: British/Irish English spelling (e.g. 'Programme', 'Paediatric').
+    Format:
+    **Speaker Name**: Text...
+    **Speaker Name**: Text...
     """
 
     for attempt in range(max_retries):
         audio_file = None
         try:
-            # 1. Configure Key (Rotates if needed)
             model = configure_genai_with_current_key()
-            current_key_num = st.session_state.key_index + 1
             
-            # 2. Upload with CURRENT Key
-            if attempt > 0:
-                st.toast(f"Retrying with Key {current_key_num}...", icon="🔄")
-            
-            # Use the library-level upload_file which uses the active `configure` key
+            # Upload
+            if attempt > 0: st.toast(f"Retry {attempt}...", icon="🔄")
             audio_file = genai.upload_file(path=tmp_file_path, display_name="HSE_Audio")
             
-            # Wait for processing
+            # Wait
             while audio_file.state.name == "PROCESSING":
                 time.sleep(2)
                 audio_file = genai.get_file(audio_file.name)
             
-            if audio_file.state.name == "FAILED":
-                raise Exception("Audio processing failed by Google.")
+            if audio_file.state.name == "FAILED": raise Exception("Audio processing failed.")
 
-            # 3. Generate
-            response = model.generate_content(
-                [prompt, audio_file],
-                request_options={"timeout": 1200}
-            )
+            # Generate
+            response = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
             
-            # 4. Success! Cleanup and Return
-            try:
-                genai.delete_file(audio_file.name)
+            # Safe Extract
+            text = safe_get_text(response)
+            
+            # Cleanup
+            try: genai.delete_file(audio_file.name)
             except: pass
             
-            return response.text
-
-        except (ResourceExhausted, ServiceUnavailable, PermissionDenied, Exception) as e:
-            # Cleanup failed file
-            if audio_file:
-                try:
-                    genai.delete_file(audio_file.name)
-                except: pass
-
-            # Check if it's a retry-able error
-            error_str = str(e)
-            is_quota = "429" in error_str or "ResourceExhausted" in error_str
-            is_perm = "403" in error_str or "PermissionDenied" in error_str
-            
-            # If it's a quota error OR a permission error (file owner mismatch), ROTATE.
-            if is_quota or is_perm or attempt < max_retries:
-                old_index = st.session_state.key_index
-                st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
-                wait_time = base_delay * (1.5 ** attempt)
-                st.toast(f"Key {old_index+1} failed. Switching to Key {st.session_state.key_index+1}...", icon="⚠️")
-                time.sleep(wait_time)
+            if text:
+                return text
             else:
-                raise e # Fatal error
-                
-    raise Exception("All API keys are currently overloaded. Please try again later.")
+                # If text is empty/invalid, force an error to trigger retry
+                raise Exception("Empty response from AI")
 
-# --- Robust Text Generator (Minutes/Chat/Brief) ---
+        except Exception as e:
+            if audio_file:
+                try: genai.delete_file(audio_file.name)
+                except: pass
+            
+            # Rotate key
+            st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
+            time.sleep(base_delay * (1.5 ** attempt))
+            
+    raise Exception("System busy. Please try again.")
+
+# --- Robust Text Generator ---
 def robust_text_gen(prompt):
     max_retries = 6
     keys = get_available_keys()
@@ -155,173 +147,112 @@ def robust_text_gen(prompt):
     for attempt in range(max_retries):
         try:
             model = configure_genai_with_current_key()
-            return model.generate_content(prompt, request_options={"timeout": 600})
-        except (ResourceExhausted, ServiceUnavailable):
-             # Rotate
-            old_index = st.session_state.key_index
-            st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
-            st.toast(f"Key {old_index+1} busy. Switching...", icon="🔄")
-            time.sleep(1)
-        except Exception as e:
-            raise e
-    raise Exception("All keys busy.")
+            response = model.generate_content(prompt, request_options={"timeout": 600})
+            text = safe_get_text(response)
+            if text: return text
+            # If text empty, fall through to rotate
+        except Exception:
+            pass
+        
+        # Rotate
+        st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
+        time.sleep(1)
+        
+    raise Exception("Unable to generate text.")
 
-# --- Audio Generator (For Podcast - Robust) ---
+# --- Audio Generator (Podcast) ---
 def generate_podcast_audio(script_text):
-    """
-    Sends the script to Gemini TTS model and returns (audio_bytes, mime_type).
-    """
     configure_genai_with_current_key()
-    
     try:
         model = genai.GenerativeModel(model_name=TTS_MODEL_NAME)
-        
-        prompt = f"""
-        Read the following podcast script naturally and engagingly.
-        SCRIPT:
-        {script_text}
-        """
-        
+        prompt = f"Read this naturally:\n{script_text}"
         response = model.generate_content(
             prompt,
             generation_config={
                 "response_modalities": ["AUDIO"],
                 "speech_config": {
-                    "voice_config": {
-                        "prebuilt_voice_config": {
-                            "voice_name": "Aoede"
-                        }
-                    }
+                    "voice_config": {"prebuilt_voice_config": {"voice_name": "Aoede"}}
                 }
             }
         )
-        
-        # Extract audio blob AND mime type
         if response.candidates and response.candidates[0].content.parts:
             for part in response.candidates[0].content.parts:
                 if part.inline_data:
                     return part.inline_data.data, part.inline_data.mime_type
         return None, None
-
     except Exception as e:
-        st.warning(f"Audio generation unavailable with current key/region: {e}")
+        st.warning(f"Audio Unavailable: {e}")
         return None, None
 
-# --- HSE Capital & Estates Minutes Generator ---
+# --- Minutes Structure ---
 def generate_hse_minutes(structured):
     now = datetime.now()
-    
-    def get(val, default="Not stated"):
-        return val if val and str(val).strip().lower() != "not mentioned" else default
-
+    def get(val, default="Not stated"): return val if val and str(val).strip().lower() != "not mentioned" else default
     def bullets(val):
         if isinstance(val, list) and val:
             items = [item for item in val if str(item).strip() and str(item).strip().lower() != "not mentioned"]
-            if items:
-                return "".join([f"• {item}\n" for item in items])
-        elif isinstance(val, str) and val.strip() and val.strip().lower() != "not mentioned":
-            return f"• {val}\n"
+            if items: return "".join([f"• {item}\n" for item in items])
         return "• None recorded\n"
 
-    # Extract Data
-    meeting_title = get(structured.get("meetingTitle"), "Capital & Estates Meeting")
-    meeting_date = get(structured.get("meetingDate"), now.strftime("%d/%m/%Y"))
-    start_time = get(structured.get("startTime"), "00:00")
-    end_time = get(structured.get("endTime"), "00:00")
-    location = get(structured.get("location"))
-    chairperson = get(structured.get("chairperson"))
-    minute_taker = get(structured.get("minuteTaker"))
-    
-    # Lists
-    attendees = bullets(structured.get("attendees", []))
-    apologies = bullets(structured.get("apologies", []))
-    matters_arising = bullets(structured.get("mattersArising", []))
-    declarations = get(structured.get("declarationsOfInterest"), "None declared.")
-    
-    # HSE Specific Topics
-    major_projects = bullets(structured.get("majorProjects", []))
-    minor_projects = bullets(structured.get("minorProjects", []))
-    estates_strategy = bullets(structured.get("estatesStrategy", []))
-    health_safety = bullets(structured.get("healthSafety", []))
-    risk_register = bullets(structured.get("riskRegister", []))
-    finance = bullets(structured.get("financeUpdate", []))
-    aob = bullets(structured.get("aob", []))
-    next_meeting = get(structured.get("nextMeetingDate"))
-
     template = f"""HSE Capital & Estates Meeting Minutes
-Meeting Title: {meeting_title}
-Date: {meeting_date}
-Time: {start_time} - {end_time}
-Location: {location}
-Chairperson: {chairperson}
-Minute Taker: {minute_taker}
+Meeting Title: {get(structured.get("meetingTitle"), "Meeting")}
+Date: {get(structured.get("meetingDate"), now.strftime("%d/%m/%Y"))}
+Time: {get(structured.get("startTime"), "00:00")} - {get(structured.get("endTime"), "00:00")}
+Location: {get(structured.get("location"))}
+Chairperson: {get(structured.get("chairperson"))}
+Minute Taker: {get(structured.get("minuteTaker"))}
 ________________________________________
 1. Attendance
 Present:
-{attendees}
+{bullets(structured.get("attendees", []))}
 Apologies:
-{apologies}
+{bullets(structured.get("apologies", []))}
 ________________________________________
 2. Minutes of Previous Meeting / Matters Arising
-{matters_arising}
+{bullets(structured.get("mattersArising", []))}
 ________________________________________
 3. Declarations of Interest
-• {declarations}
+• {get(structured.get("declarationsOfInterest"), "None declared.")}
 ________________________________________
 4. Capital Projects Update
 4.1 Major Projects (Capital)
-{major_projects}
+{bullets(structured.get("majorProjects", []))}
 4.2 Minor Works / Equipment / ICT
-{minor_projects}
+{bullets(structured.get("minorProjects", []))}
 ________________________________________
 5. Estates Strategy and Planning
-{estates_strategy}
+{bullets(structured.get("estatesStrategy", []))}
 ________________________________________
 6. Health & Safety / Regulatory Compliance
-{health_safety}
+{bullets(structured.get("healthSafety", []))}
 ________________________________________
 7. Risk Register
-{risk_register}
+{bullets(structured.get("riskRegister", []))}
 ________________________________________
 8. Finance Update
-{finance}
+{bullets(structured.get("financeUpdate", []))}
 ________________________________________
-9. AOB (Any Other Business)
-{aob}
+9. AOB
+{bullets(structured.get("aob", []))}
 ________________________________________
-10. Date of Next Meeting
-• {next_meeting}
+10. Next Meeting
+• {get(structured.get("nextMeetingDate"))}
 ________________________________________
 Minutes Approved By: ____________________ Date: ___________
 """
     return template
 
-# --- DOCX Export Functions ---
 def create_docx(content, kind="minutes"):
     doc = Document()
-    if kind == "minutes":
-        doc.add_heading("HSE Capital & Estates Meeting Minutes", level=1)
-        for line in content.splitlines():
-            if line.strip().endswith(":") and not line.startswith("•"):
-                try: doc.add_heading(line.strip(), level=2)
-                except: doc.add_paragraph(line)
-            elif line.strip() == "________________________________________":
-                doc.add_paragraph("-" * 50)
-            elif line.strip():
-                doc.add_paragraph(line)
-    else:
-        doc.add_heading("Meeting Document", level=1)
-        doc.add_paragraph(content)
-        
+    doc.add_heading("Meeting Document", level=1)
+    doc.add_paragraph(content)
     output = io.BytesIO()
     doc.save(output)
     output.seek(0)
     return output
 
-# --- Setup & Config ---
+# --- Setup ---
 st.set_page_config(page_title="HSE MAI Recap", layout="wide", page_icon="🏥")
-
-# Custom CSS for HSE Green Theme
 st.markdown("""
 <style>
     h1, h2, h3, h4 { color: #00563B !important; }
@@ -331,18 +262,15 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# Initial Config
 try:
     if "GEMINI_API_KEY" in st.secrets:
         configure_genai_with_current_key()
     else:
-        st.error("GEMINI_API_KEY missing from secrets.")
+        st.error("Secrets missing.")
         st.stop()
-except Exception as e:
-    st.error(f"Config Error: {e}")
-    st.stop()
+except:
+    pass
 
-# --- Password Protection ---
 if "password_verified" not in st.session_state:
     st.session_state.password_verified = False
 
@@ -358,242 +286,151 @@ if not st.session_state.password_verified:
                     st.session_state.password_verified = True
                     st.rerun()
                 elif not st.secrets.get("password"):
-                     st.warning("Password not set in secrets.")
+                     st.warning("Password not set.")
                 else:
                     st.error("Invalid code.")
     st.stop()
 
-# --- App State Init ---
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+if "messages" not in st.session_state: st.session_state.messages = []
+if "transcript" not in st.session_state: st.session_state.transcript = ""
 
 # --- Sidebar ---
 with st.sidebar:
     st.image(LOGO_URL, width="stretch")
     st.title("MAI Recap Pro")
-    st.caption("Capital & Estates Assistant")
-    
     if st.button("🔄 New Meeting / Reset"):
         for key in list(st.session_state.keys()):
-            # Keep password and key index
-            if key not in ['password_verified', 'key_index']:
-                del st.session_state[key]
+            if key not in ['password_verified', 'key_index']: del st.session_state[key]
         st.rerun()
-        
     st.markdown("---")
     if st.button("Created by Dave Maher"):
-        st.info("This application's intellectual property belongs to Dave Maher.")
+        st.info("Property of Dave Maher.")
+    st.markdown("**Version:** 5.0 (NotebookLM Style)")
 
-    st.markdown("---")
-    st.markdown("**Version:** 4.2 (Audio Fix)")
-    st.info("System optimized for UK/Irish English.")
-
-# --- Main UI Header ---
-col1, col2 = st.columns([1, 6])
-with col1:
-    st.image(LOGO_URL, width=120)
-with col2:
+# --- Header ---
+c1, c2 = st.columns([1, 6])
+with c1: st.image(LOGO_URL, width=120)
+with c2: 
     st.title("HSE Meeting Minutes Generator")
     st.markdown("#### Automated Documentation System")
 
-st.markdown("### 📤 Input Source")
-
-# --- Input Selection ---
-mode = st.radio(
-    "Choose input method:",
-    ["Record Microphone", "Upload Audio File"],
-    horizontal=True
-)
-
+# --- Input ---
+mode = st.radio("Input Source:", ["Record Microphone", "Upload Audio File"], horizontal=True)
 audio_bytes = None
-
 if mode == "Upload Audio File":
-    uploaded_audio = st.file_uploader(
-        "Upload Audio (WAV, MP3, M4A)",
-        type=["wav", "mp3", "m4a", "ogg"]
-    )
-    if uploaded_audio:
-        st.audio(uploaded_audio)
-        audio_bytes = uploaded_audio
+    audio_bytes = st.file_uploader("Upload (WAV, MP3, M4A)", type=["wav", "mp3", "m4a", "ogg"])
+    if audio_bytes: st.audio(audio_bytes)
+else:
+    audio_bytes = st.audio_input("🎙️ Record")
+    if audio_bytes: st.audio(audio_bytes)
 
-elif mode == "Record Microphone":
-    recorded_audio = st.audio_input("🎙️ Record Meeting")
-    if recorded_audio:
-        st.audio(recorded_audio)
-        audio_bytes = recorded_audio
+with st.expander("ℹ️ Context (Optional)"):
+    context_info = st.text_area("Context:", placeholder="e.g. Chair: Sarah. Topic: Budget.", height=60)
 
-# --- Context Box ---
-with st.expander("ℹ️ Add Context (Optional but Recommended)"):
-    context_info = st.text_area(
-        "Attendees / Topics:",
-        placeholder="e.g. Chair: Sarah O'Brien. Topics: Mallow General Extension, Budget Review.",
-        help="Helps the AI identify names and acronyms."
-    )
-
-# --- Transcription ---
-if audio_bytes and st.button("🧠 Transcribe Audio"):
-    with st.spinner("Processing audio with HSE Security Protocols..."):
-        if hasattr(audio_bytes, "read"):
-            audio_data_bytes = audio_bytes.read()
-        else:
-            data = audio_bytes
+if audio_bytes and st.button("🧠 Transcribe"):
+    with st.spinner("Processing..."):
+        if hasattr(audio_bytes, "read"): data = audio_bytes.read()
+        else: data = audio_bytes
         
-        # Temp file handling
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_file:
-            tmp_file.write(audio_data_bytes)
-            tmp_file_path = tmp_file.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(data)
+            tmp_path = tmp.name
         
         try:
-            # CALL THE ROBUST AUDIO PROCESSOR
-            transcript_text = process_audio_with_rotation(tmp_file_path, context_info)
-            
+            transcript_text = process_audio_with_rotation(tmp_path, context_info)
             st.session_state["transcript"] = transcript_text
-            st.success("Transcript generated successfully.")
-            st.info("Temporary audio files cleaned from server.")
-
+            st.success("Transcription Complete.")
         except Exception as e:
             st.error(f"Error: {e}")
-            
         finally:
-            if os.path.exists(tmp_file_path):
-                os.remove(tmp_file_path)
+            if os.path.exists(tmp_path): os.remove(tmp_path)
 
-# --- Output Section ---
-if "transcript" in st.session_state:
+# --- Output Tabs ---
+if st.session_state.transcript:
     st.markdown("---")
-    
-    # Updated Tabs
-    t1, t2, t3, t4, t5 = st.tabs(["📄 Transcript", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast Studio", "💬 Chat"])
+    t1, t2, t3, t4, t5 = st.tabs(["📄 Transcript", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast", "💬 Chat"])
 
-    # --- TAB 1: TRANSCRIPT ---
+    # 1. Transcript
     with t1:
-        st.text_area("Full Transcript:", st.session_state["transcript"], height=500)
+        st.text_area("Full Transcript:", st.session_state.transcript, height=500)
 
-    # --- TAB 2: MINUTES ---
+    # 2. Minutes
     with t2:
-        if st.button("Generate Official Minutes"):
-            with st.spinner("Extracting HSE Data Points..."):
-                try:
-                    prompt_structured = f"""
-                    You are an expert secretary for HSE Capital & Estates.
-                    Extract structured data from this transcript using UK/Irish English.
-                    Return ONLY valid JSON.
-                    TRANSCRIPT: {st.session_state['transcript']}
-                    
-                    Keys to extract: meetingTitle, meetingDate, startTime, endTime, location, chairperson, minuteTaker, attendees, apologies, mattersArising, declarationsOfInterest, majorProjects, minorProjects, estatesStrategy, healthSafety, riskRegister, financeUpdate, aob, nextMeetingDate.
-                    """
-                    
-                    # EXECUTE WITH ROTATION
-                    response = robust_text_gen(prompt_structured)
-                    
-                    # Parse JSON
-                    json_match = re.search(r"```json\s*([\s\S]*?)\s*```|({[\s\S]*})", response.text, re.DOTALL)
-                    if json_match:
-                        json_str = json_match.group(1) or json_match.group(2)
-                        structured = json.loads(json_str.strip())
-                        st.session_state["minutes"] = generate_hse_minutes(structured)
-                        st.success("Minutes Generated.")
-                    else:
-                        st.error("Could not parse AI response.")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
-        if "minutes" in st.session_state:
-            st.text_area("Draft Minutes:", st.session_state["minutes"], height=600)
-            st.download_button("Download DOCX", create_docx(st.session_state["minutes"], "minutes"), "HSE_Minutes.docx")
-
-    # --- TAB 3: BRIEFING ---
-    with t3:
-        st.info("Generate a high-level summary for executive review.")
-        if st.button("Generate Briefing Note"):
-            with st.spinner("Analyzing..."):
-                p_brief = f"""
-                Create a high-level "Executive Briefing Note" for HSE management based on this transcript.
-                Use UK/Irish English.
-                Sections: 
-                1. Executive Summary
-                2. Key Strategic Decisions
-                3. Critical Risks / Issues
-                4. Action Items Table
-                TRANSCRIPT: {st.session_state['transcript']}
+        if st.button("Generate Minutes", key="btn_min"):
+            with st.spinner("Extracting..."):
+                prompt = f"""
+                Extract structured data from transcript (JSON). UK English.
+                Transcript: {st.session_state.transcript}
+                Keys: meetingTitle, meetingDate, startTime, endTime, location, chairperson, minuteTaker, attendees, apologies, mattersArising, declarationsOfInterest, majorProjects, minorProjects, estatesStrategy, healthSafety, riskRegister, financeUpdate, aob, nextMeetingDate.
                 """
-                res = robust_text_gen(p_brief)
-                st.session_state["briefing"] = res.text
+                try:
+                    res = robust_text_gen(prompt)
+                    json_match = re.search(r"({[\s\S]*})", res, re.DOTALL)
+                    if json_match:
+                        structured = json.loads(json_match.group(1))
+                        st.session_state.minutes = generate_hse_minutes(structured)
+                except Exception as e: st.error(f"Error: {e}")
+        
+        if "minutes" in st.session_state:
+            st.text_area("Draft:", st.session_state.minutes, height=600)
+            st.download_button("Download DOCX", create_docx(st.session_state.minutes), "Minutes.docx")
+
+    # 3. Briefing
+    with t3:
+        if st.button("Generate Briefing", key="btn_brief"):
+            with st.spinner("Analyzing..."):
+                prompt = f"""
+                Write a neutral, matter-of-fact Executive Briefing based on this transcript.
+                Do NOT use corporate fluff. Be candid and objective.
+                Sections: Executive Summary, Key Decisions, Critical Risks, Action Items.
+                Transcript: {st.session_state.transcript}
+                """
+                st.session_state.briefing = robust_text_gen(prompt)
         
         if "briefing" in st.session_state:
-            st.markdown(st.session_state["briefing"])
-            st.download_button("Download Briefing", create_docx(st.session_state["briefing"], "briefing"), "HSE_Briefing.docx")
+            st.markdown(st.session_state.briefing)
+            st.download_button("Download Briefing", create_docx(st.session_state.briefing), "Briefing.docx")
 
-    # --- TAB 4: PODCAST ---
+    # 4. Podcast
     with t4:
-        st.markdown("### 🎙️ HSE Podcast Studio")
-        st.info("Step 1: Generate the script. Step 2: Generate the audio.")
-        
-        if st.button("Step 1: Create Script"):
+        st.info("NotebookLM Style: Two neutral analysts discussing the meeting.")
+        if st.button("Generate Script", key="btn_script"):
             with st.spinner("Writing script..."):
-                p_pod = f"""
-                Convert this meeting transcript into a lively, engaging 3-minute podcast script for HSE staff.
-                Format: Pure dialogue only. No stage directions like [Music] or [Laughs].
-                Speakers: Sarah (Host) and Mike (Expert).
-                Topic: Key outcomes of the Capital & Estates meeting.
-                Tone: Professional but conversational Irish/UK English.
-                TRANSCRIPT: {st.session_state['transcript']}
+                prompt = f"""
+                Convert this transcript into a podcast script between two hosts (Host and Expert).
+                Tone: Candid, neutral, analytical (Like NotebookLM). NOT corporate/PR.
+                They should discuss the meeting outcomes naturally, pointing out interesting dynamics or risks.
+                Transcript: {st.session_state.transcript}
                 """
-                res = robust_text_gen(p_pod)
-                st.session_state["podcast"] = res.text
+                st.session_state.podcast = robust_text_gen(prompt)
         
         if "podcast" in st.session_state:
-            st.text_area("Script Preview:", st.session_state["podcast"], height=300)
-            st.download_button("Download Script", create_docx(st.session_state["podcast"], "other"), "Podcast_Script.docx")
-            
-            st.markdown("---")
-            if st.button("🎧 Step 2: Generate Audio"):
-                with st.spinner("Synthesizing voice (this may take 20-30 seconds)..."):
-                    # Get audio + mime type
-                    audio_data, mime_type = generate_podcast_audio(st.session_state["podcast"])
-                    
-                    if audio_data:
-                        # AUDIO FIX: If raw PCM, wrap in WAV header
-                        if "pcm" in mime_type.lower() or "l16" in mime_type.lower() or "audio/x-raw" in mime_type.lower():
-                             audio_data = add_wav_header(audio_data)
-                             mime_type = "audio/wav"
-                        
-                        st.session_state["podcast_audio"] = audio_data
-                        st.session_state["podcast_mime"] = mime_type
-                        st.success("Audio Generated!")
-                    else:
-                        st.error("Audio generation failed. Please try again.")
+            st.text_area("Script:", st.session_state.podcast, height=300)
+            if st.button("Generate Audio", key="btn_audio"):
+                with st.spinner("Synthesizing..."):
+                    audio, mime = generate_podcast_audio(st.session_state.podcast)
+                    if audio:
+                        if "pcm" in mime.lower() or "raw" in mime.lower():
+                             audio = add_wav_header(audio)
+                             mime = "audio/wav"
+                        st.session_state.pod_audio = audio
+                        st.session_state.pod_mime = mime
+                    else: st.error("Audio generation failed.")
+        
+        if "pod_audio" in st.session_state:
+            st.audio(st.session_state.pod_audio, format=st.session_state.pod_mime)
 
-        if "podcast_audio" in st.session_state:
-            # Play Audio using dynamic mime type
-            st.audio(st.session_state["podcast_audio"], format=st.session_state.get("podcast_mime", "audio/wav"))
-
-    # --- TAB 5: CHAT ---
+    # 5. Chat
     with t5:
-        st.info("Ask questions about the meeting details.")
-        for msg in st.session_state.messages:
-            with st.chat_message(msg["role"]):
-                st.markdown(msg["content"])
-
-        if prompt := st.chat_input("E.g. What was the budget for Mallow?"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
+        for m in st.session_state.messages:
+            with st.chat_message(m["role"]): st.markdown(m["content"])
+        
+        if q := st.chat_input("Question?"):
+            st.session_state.messages.append({"role": "user", "content": q})
+            with st.chat_message("user"): st.markdown(q)
             with st.chat_message("assistant"):
-                p_chat = f"""
-                Answer strictly based on the transcript below.
-                Use UK/Irish English. Currency: Euro (€).
-                TRANSCRIPT: {st.session_state['transcript']}
-                QUESTION: {prompt}
-                """
-                with st.spinner("Thinking..."):
-                    res = robust_text_gen(p_chat)
-                    st.markdown(res.text)
-                    st.session_state.messages.append({"role": "assistant", "content": res.text})
-
-# --- Footer ---
-st.markdown("---")
-st.caption("HSE Capital & Estates | Internal Use Only")
-
+                prompt = f"Answer neutrally based on transcript: {st.session_state.transcript}\nQ: {q}"
+                ans = robust_text_gen(prompt)
+                st.markdown(ans)
+                st.session_state.messages.append({"role": "assistant", "content": ans})
 
