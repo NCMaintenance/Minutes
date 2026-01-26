@@ -321,7 +321,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.2 (Side Context)")
+    st.markdown("**Version:** 5.2")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
