@@ -279,7 +279,7 @@ if "transcript" not in st.session_state: st.session_state.transcript = ""
 # --- Sidebar ---
 with st.sidebar:
     st.image(LOGO_URL, width="stretch")
-    st.title("MAI Recap Pro")
+    st.title("MAI Recap")
     
     # 1. Reset
     if st.button("🔄 New Meeting / Reset"):
@@ -327,7 +327,7 @@ with st.sidebar:
 c1, c2 = st.columns([1, 6])
 with c1: st.image(LOGO_URL, width=120)
 with c2: 
-    st.title("HSE Meeting Minutes Generator")
+    st.title("Meeting Minutes Generator")
     st.markdown("#### Automated Documentation System")
 
 # --- Input ---
