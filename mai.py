@@ -14,7 +14,7 @@ from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, Pe
 # --- Configuration ---
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
 TTS_MODEL_NAME = 'gemini-2.5-flash-preview-tts'
-LOGO_URL = "https://www.esther.ie/wp-content/uploads/2022/05/HSE-Logo-Green-NEW-no-background.png" #"https://www.ehealthireland.ie/media/k1app1wt/hse-logo-black-png.png"
+LOGO_URL = "https://www.esther.ie/wp-content/uploads/2022/05/HSE-Logo-Green-NEW-no-background.png"
 FAVICON_URL = "https://assets.hse.ie/static/hse-frontend/assets/favicons/favicon.ico"
 
 # --- API Key Management ---
