@@ -427,7 +427,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.3.0 (Robust Fixes)")
+    st.markdown("**Version:** 5.3.1 (UX Fix)")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
@@ -437,13 +437,15 @@ with c2:
     st.markdown("#### Automated Documentation System")
 
 # --- Input ---
-mode = st.radio("Input Source:", ["Record Microphone", "Upload Audio File"], horizontal=True)
+# FIX: Changed labels to Nouns to avoid "Action Button" confusion
+mode = st.radio("Input Source:", ["Microphone", "File Upload"], horizontal=True)
 audio_bytes = None
-if mode == "Upload Audio File":
+
+if mode == "File Upload":
     audio_bytes = st.file_uploader("Upload (WAV, MP3, M4A)", type=["wav", "mp3", "m4a", "ogg"])
     if audio_bytes: st.audio(audio_bytes)
 else:
-    audio_bytes = st.audio_input("🎙️ Record")
+    audio_bytes = st.audio_input("🎙️ Click to Record")
     if audio_bytes: st.audio(audio_bytes)
 
 if audio_bytes and st.button("🧠 Transcribe"):
