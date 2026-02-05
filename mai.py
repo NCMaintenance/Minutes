@@ -5,6 +5,9 @@ import os
 import time
 from datetime import datetime
 from docx import Document
+from docx.shared import RGBColor, Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+import urllib.request
 import io
 import tempfile
 import re
@@ -184,6 +187,7 @@ def generate_hse_minutes(structured):
             if items: return "".join([f"• {item}\n" for item in items])
         return "• None recorded\n"
 
+    # Added extra newlines before Signature block
     template = f"""HSE Capital & Estates Meeting Minutes
 Meeting Title: {get(structured.get("meetingTitle"), "Meeting")}
 Date: {get(structured.get("meetingDate"), now.strftime("%d/%m/%Y"))}
@@ -228,14 +232,93 @@ ________________________________________
 10. Next Meeting
 • {get(structured.get("nextMeetingDate"))}
 ________________________________________
+
+
+
 Minutes Approved By: ____________________ Date: ___________
 """
     return template
 
 def create_docx(content, kind="minutes"):
     doc = Document()
-    doc.add_heading("Meeting Document", level=1)
-    doc.add_paragraph(content)
+    
+    # 1. Add HSE Logo
+    try:
+        # Download logo to temp file
+        req = urllib.request.Request(LOGO_URL, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req) as response:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp_logo:
+                tmp_logo.write(response.read())
+                tmp_logo_path = tmp_logo.name
+        
+        doc.add_picture(tmp_logo_path, width=Inches(1.2))
+        os.remove(tmp_logo_path)
+    except Exception:
+        pass # Fallback if no internet or url fail
+
+    # 2. Define Styles with HSE Green
+    styles = doc.styles
+    HSE_GREEN = RGBColor(0, 86, 59)
+    
+    # Update Heading 1 style
+    h1 = styles['Heading 1']
+    h1.font.color.rgb = HSE_GREEN
+    h1.font.size = Pt(16)
+    h1.font.bold = True
+    
+    # Update Heading 2 style
+    h2 = styles['Heading 2']
+    h2.font.color.rgb = HSE_GREEN
+    h2.font.size = Pt(13)
+    h2.font.bold = True
+
+    # 3. Parse content lines for smart formatting
+    lines = content.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            # Add small spacing for empty lines, but not too much
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(0)
+            continue
+            
+        # Skip visual separators in the DOCX (we use style/headers instead)
+        if "________" in line and "Approved By" not in line:
+            continue 
+        
+        # Detect Main Title
+        if "HSE Capital & Estates Meeting Minutes" in line:
+            doc.add_heading(line, level=1)
+        
+        # Detect Section Headers (e.g., "1. Attendance")
+        elif re.match(r'^\d+\.\s', line):
+            doc.add_heading(line, level=2)
+            
+        # Detect Sub-headers (e.g., "4.1 Major Projects")
+        elif re.match(r'^\d+\.\d+\s', line):
+             p = doc.add_paragraph()
+             runner = p.add_run(line)
+             runner.bold = True
+             runner.font.color.rgb = HSE_GREEN
+        
+        # Detect Key-Value pairs (Date: ..., Time: ...) for bolding
+        elif ":" in line and len(line.split(":")[0]) < 40 and not line.startswith("•"):
+            parts = line.split(":", 1)
+            p = doc.add_paragraph()
+            p.add_run(parts[0] + ":").bold = True
+            p.add_run(parts[1])
+            
+        # Signature Block specific formatting
+        elif "Minutes Approved By:" in line:
+            p = doc.add_paragraph()
+            p_format = p.paragraph_format
+            p_format.space_before = Pt(36) # Extra space before signature
+            p.add_run(line).bold = True
+            
+        else:
+            doc.add_paragraph(line)
+            
     output = io.BytesIO()
     doc.save(output)
     output.seek(0)
@@ -456,7 +539,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.4.0 (Analytics Dashboard)")
+    st.markdown("**Version:** 5.5.0 (Green DOCX + Analytics)")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
@@ -732,7 +815,6 @@ st.markdown(
     "Always verify the accuracy of transcriptions and minutes."
 )
 st.markdown("Created by Dave Maher | For HSE internal use.")
-
 # import streamlit as st
 # import google.generativeai as genai
 # import json
