@@ -539,7 +539,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.5.0 (Green DOCX + Analytics)")
+    st.markdown("**Version:** 5.6.0 (Advanced Visuals)")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
@@ -750,7 +750,7 @@ if st.session_state.transcript:
             
             st.markdown("---")
             
-            # --- Charts ---
+            # --- Charts Row 1 ---
             c1, c2 = st.columns([1, 1])
             
             with c1:
@@ -784,6 +784,37 @@ if st.session_state.transcript:
                     ).interactive()
                     
                     st.altair_chart(scatter, use_container_width=True)
+                    
+            st.markdown("---")
+
+            # --- Charts Row 2 ---
+            c3, c4 = st.columns([1, 1])
+
+            with c3:
+                st.markdown("#### Verbosity (Avg Words/Turn)")
+                if not df.empty:
+                    # Average words per turn
+                    verbosity = df.groupby("Speaker")["Words"].mean().reset_index()
+                    
+                    bar = alt.Chart(verbosity).mark_bar().encode(
+                        x=alt.X('Words', title='Avg Words per Turn'),
+                        y=alt.Y('Speaker', sort='-x'),
+                        color=alt.Color('Speaker', legend=None, scale=alt.Scale(scheme='greens')),
+                        tooltip=['Speaker', 'Words']
+                    )
+                    st.altair_chart(bar, use_container_width=True)
+
+            with c4:
+                st.markdown("#### Meeting Energy (Volume Over Time)")
+                if not df.empty:
+                    # Rolling average or just raw area chart of volume
+                    area = alt.Chart(df).mark_area(opacity=0.6, interpolate='step').encode(
+                        x=alt.X('Segment', title='Timeline'),
+                        y=alt.Y('Words', title='Volume'),
+                        color=alt.value('#00563B'), # Solid HSE Green
+                        tooltip=['Segment', 'Words', 'Speaker']
+                    )
+                    st.altair_chart(area, use_container_width=True)
 
         else:
             st.info("Insufficient data to generate analytics. Please transcribe a meeting first.")
