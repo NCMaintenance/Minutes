@@ -9,6 +9,8 @@ import io
 import tempfile
 import re
 import struct
+import pandas as pd
+import altair as alt
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
 
 # --- Configuration ---
@@ -49,7 +51,6 @@ def safe_get_text(response):
     except Exception: return None
 
 # --- Helper: Detect Speakers (Cached) ---
-# FIX: Added caching to improve performance
 @st.cache_data
 def detect_speakers(text):
     """Finds speaker labels like '**Speaker 1**:' or 'Speaker 1:'"""
@@ -317,6 +318,34 @@ st.markdown("""
         font-weight: 600;
         border-radius: 8px;
     }
+    
+    /* --- Metric Card Styling --- */
+    .metric-card {
+        background-color: white;
+        border: 1px solid rgba(0, 86, 59, 0.1);
+        border-radius: 12px;
+        padding: 20px;
+        text-align: center;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+        transition: transform 0.2s;
+    }
+    .metric-card:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+    }
+    .metric-value {
+        font-size: 32px;
+        font-weight: 700;
+        color: #00563B;
+        margin: 0;
+    }
+    .metric-label {
+        font-size: 14px;
+        color: #666;
+        margin: 0;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -427,7 +456,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.3.1 (UX Fix)")
+    st.markdown("**Version:** 5.4.0 (Analytics Dashboard)")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
@@ -480,7 +509,7 @@ if st.session_state.transcript:
     st.markdown("---")
     
     # FIX 1: Radio Button Navigation (Persistent) replacement for st.tabs
-    nav_options = ["📄 Transcript", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast", "💬 Chat"]
+    nav_options = ["📄 Transcript", "📊 Analytics", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast", "💬 Chat"]
     
     # Ensure current_view is valid
     if st.session_state.current_view not in nav_options:
@@ -513,7 +542,95 @@ if st.session_state.transcript:
             st.session_state.detected_speakers = detect_speakers(edited_transcript)
             # No rerun needed here, it syncs for next action
 
-    # 2. Minutes
+    # 2. Analytics (NEW)
+    elif selected_view == "📊 Analytics":
+        st.markdown("### Meeting Analytics")
+        
+        # Parse transcript for analysis
+        txt = st.session_state.transcript
+        # Regex to split by speaker chunks
+        # This splits into: [preamble, Speaker1, Text1, Speaker2, Text2, ...]
+        chunks = re.split(r'(?m)^(?:[\*\_]{2})?([A-Za-z0-9\s\(\)\-\.]+?)(?:[\*\_]{2})?[:]', txt)
+        
+        if len(chunks) > 1:
+            data = []
+            total_words = 0
+            
+            # Skip preamble (index 0), iterate pairs (speaker=i, text=i+1)
+            for i in range(1, len(chunks), 2):
+                if i+1 < len(chunks):
+                    speaker = chunks[i].strip()
+                    content = chunks[i+1].strip()
+                    word_count = len(content.split())
+                    total_words += word_count
+                    data.append({"Speaker": speaker, "Words": word_count, "Segment": i//2})
+            
+            df = pd.DataFrame(data)
+            
+            # --- Metrics Row ---
+            col1, col2, col3 = st.columns(3)
+            
+            # Calc metrics
+            est_minutes = round(total_words / 130) # Approx 130 wpm
+            if est_minutes < 1: est_minutes = "< 1"
+            
+            unique_speakers = df['Speaker'].nunique() if not df.empty else 0
+            
+            # HTML Card helper
+            def metric_card(label, value):
+                return f"""
+                <div class="metric-card">
+                    <p class="metric-label">{label}</p>
+                    <p class="metric-value">{value}</p>
+                </div>
+                """
+            
+            with col1: st.markdown(metric_card("Est. Duration", f"{est_minutes} min"), unsafe_allow_html=True)
+            with col2: st.markdown(metric_card("Total Words", f"{total_words}"), unsafe_allow_html=True)
+            with col3: st.markdown(metric_card("Active Speakers", f"{unique_speakers}"), unsafe_allow_html=True)
+            
+            st.markdown("---")
+            
+            # --- Charts ---
+            c1, c2 = st.columns([1, 1])
+            
+            with c1:
+                st.markdown("#### 🗣️ Share of Voice")
+                if not df.empty:
+                    # Group by speaker for pie/donut chart
+                    speaker_stats = df.groupby("Speaker")["Words"].sum().reset_index()
+                    
+                    base = alt.Chart(speaker_stats).encode(
+                        theta=alt.Theta("Words", stack=True),
+                        color=alt.Color("Speaker", scale=alt.Scale(scheme='greens')) # HSE Green theme
+                    )
+                    
+                    pie = base.mark_arc(outerRadius=120, innerRadius=60)
+                    text = base.mark_text(radius=140).encode(
+                        text="Speaker",
+                        order=alt.Order("Words", sort="descending")
+                    )
+                    
+                    st.altair_chart(pie + text, use_container_width=True)
+            
+            with c2:
+                st.markdown("#### 🌊 Conversation Flow")
+                if not df.empty:
+                    # Scatter plot: X=Segment (Time), Y=Speaker
+                    scatter = alt.Chart(df).mark_circle(size=100).encode(
+                        x=alt.X('Segment', title='Timeline (Sequencing)'),
+                        y=alt.Y('Speaker', title=None),
+                        color=alt.Color('Speaker', legend=None, scale=alt.Scale(scheme='greens')),
+                        tooltip=['Speaker', 'Words', 'Segment']
+                    ).interactive()
+                    
+                    st.altair_chart(scatter, use_container_width=True)
+
+        else:
+            st.info("Insufficient data to generate analytics. Please transcribe a meeting first.")
+
+
+    # 3. Minutes
     elif selected_view == "🏥 Minutes":
         if st.button("Generate Minutes", key="btn_min"):
             with st.spinner("Extracting..."):
@@ -542,7 +659,7 @@ if st.session_state.transcript:
             st.text_area("Draft:", st.session_state.minutes, height=600)
             st.download_button("Download DOCX", create_docx(st.session_state.minutes), "Minutes.docx")
 
-    # 3. Briefing
+    # 4. Briefing
     elif selected_view == "📝 Briefing":
         if st.button("Generate Briefing", key="btn_brief"):
             with st.spinner("Analyzing..."):
@@ -559,7 +676,7 @@ if st.session_state.transcript:
             st.markdown(st.session_state.briefing)
             st.download_button("Download Briefing", create_docx(st.session_state.briefing), "Briefing.docx")
 
-    # 4. Podcast
+    # 5. Podcast
     elif selected_view == "🎙️ Podcast":
         st.info("NotebookLM Style: Two neutral analysts discussing the meeting.")
         if st.button("Generate Script", key="btn_script"):
@@ -589,7 +706,7 @@ if st.session_state.transcript:
         if "pod_audio" in st.session_state:
             st.audio(st.session_state.pod_audio, format=st.session_state.pod_mime)
 
-    # 5. Chat
+    # 6. Chat
     elif selected_view == "💬 Chat":
         # FIX 7: Chat History Limit (Max 20)
         MAX_CHAT_HISTORY = 20
