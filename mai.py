@@ -243,40 +243,83 @@ def create_docx(content, kind="minutes"):
 # --- Setup ---
 st.set_page_config(page_title="HSE MAI Recap", layout="wide", page_icon=FAVICON_URL)
 
-# FIX 1 (Styling): CSS to make Radio buttons look like tabs
+# FIX 1 (Styling): CSS to make Radio buttons look like tabs (PREMIUM GLASS LOOK)
 st.markdown("""
 <style>
+    /* Global Typography & Colors */
     h1, h2, h3, h4 { color: #00563B !important; }
-    .stButton > button { background-color: #00563B !important; color: white !important; }
+    
+    /* Standard Streamlit Button Override */
+    .stButton > button { 
+        background: linear-gradient(135deg, #00563B 0%, #007a53 100%) !important; 
+        color: white !important; 
+        border: none !important;
+        border-radius: 8px !important;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .stButton > button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+    }
+    
+    /* Sidebar Background */
     div[data-testid="stSidebar"] { background-color: #f8f9fa; }
     .stInfo { background-color: #e8f5e9; color: #00563B; }
     
-    /* Make radio buttons look like a horizontal nav bar */
+    /* --- Premium Glass Radio Buttons (Tabs & Input Selectors) --- */
+    
+    /* Hide the default radio circle/dot */
     div[role="radiogroup"] > label > div:first-child {
         display: none;
     }
+    
+    /* Container styling for horizontal alignment */
     div[role="radiogroup"] {
+        background: transparent;
+        display: flex;
         flex-direction: row;
-        gap: 10px;
-        border-bottom: 2px solid #ddd;
-        padding-bottom: 10px;
+        gap: 12px;
+        padding: 10px 2px;
         overflow-x: auto;
+        border: none;
     }
+    
+    /* Individual Option Styling (The "Pill") */
     div[role="radiogroup"] label {
-        background-color: #f0f2f6;
-        padding: 8px 16px;
-        border-radius: 4px;
-        border: 1px solid #ddd;
+        background: rgba(255, 255, 255, 0.7); /* Glass base */
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border: 1px solid rgba(0, 86, 59, 0.15);
+        padding: 12px 24px;
+        border-radius: 12px;
         cursor: pointer;
-        transition: all 0.2s;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); /* Smooth spring-like transition */
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        color: #444;
+        font-weight: 500;
+        min-width: 120px; /* Ensure good touch target */
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
-    div[role="radiogroup"] label[data-checked="true"] {
-        background-color: #00563B !important;
-        color: white !important;
-        border-color: #00563B !important;
-    }
+    
+    /* Hover State */
     div[role="radiogroup"] label:hover {
-        background-color: #e2e6ea;
+        background: rgba(255, 255, 255, 0.95);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
+        border-color: rgba(0, 86, 59, 0.3);
+    }
+    
+    /* Selected State - Premium Green Gradient Highlight */
+    div[role="radiogroup"] label[data-checked="true"] {
+        background: linear-gradient(135deg, #00563B 0%, #007a53 100%) !important;
+        color: white !important;
+        border: 1px solid transparent !important;
+        box-shadow: 0 4px 15px rgba(0, 86, 59, 0.3) !important;
+        transform: translateY(-1px);
+        font-weight: 600;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -566,6 +609,14 @@ if st.session_state.transcript:
                 ans = robust_text_gen(prompt)
                 st.markdown(ans)
                 st.session_state.messages.append({"role": "assistant", "content": ans})
+# --- Footer ---
+st.markdown("---")
+st.markdown(
+    "**Disclaimer:** This implementation has been tested using sample data. "
+    "Adjustments may be required to ensure optimal performance and accuracy with real-world meeting audio. "
+    "Always verify the accuracy of transcriptions and minutes."
+)
+st.markdown("Created by Dave Maher | For HSE internal use.")
 # --- Footer ---
 st.markdown("---")
 st.markdown(
