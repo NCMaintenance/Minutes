@@ -539,7 +539,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.6.0 (Advanced Visuals)")
+    st.markdown("**Version:** 5.7.0 (Sentiment & Fixes)")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
@@ -707,15 +707,12 @@ if st.session_state.transcript:
         
         # Parse transcript for analysis
         txt = st.session_state.transcript
-        # Regex to split by speaker chunks
-        # This splits into: [preamble, Speaker1, Text1, Speaker2, Text2, ...]
         chunks = re.split(r'(?m)^(?:[\*\_]{2})?([A-Za-z0-9\s\(\)\-\.]+?)(?:[\*\_]{2})?[:]', txt)
         
         if len(chunks) > 1:
             data = []
             total_words = 0
             
-            # Skip preamble (index 0), iterate pairs (speaker=i, text=i+1)
             for i in range(1, len(chunks), 2):
                 if i+1 < len(chunks):
                     speaker = chunks[i].strip()
@@ -729,13 +726,10 @@ if st.session_state.transcript:
             # --- Metrics Row ---
             col1, col2, col3 = st.columns(3)
             
-            # Calc metrics
-            est_minutes = round(total_words / 130) # Approx 130 wpm
+            est_minutes = round(total_words / 130)
             if est_minutes < 1: est_minutes = "< 1"
-            
             unique_speakers = df['Speaker'].nunique() if not df.empty else 0
             
-            # HTML Card helper
             def metric_card(label, value):
                 return f"""
                 <div class="metric-card">
@@ -754,36 +748,30 @@ if st.session_state.transcript:
             c1, c2 = st.columns([1, 1])
             
             with c1:
-                st.markdown("#### Share of Voice") # Removed Emoji
+                st.markdown("#### Share of Voice")
                 if not df.empty:
-                    # Group by speaker for pie/donut chart
                     speaker_stats = df.groupby("Speaker")["Words"].sum().reset_index()
-                    
                     base = alt.Chart(speaker_stats).encode(
                         theta=alt.Theta("Words", stack=True),
-                        color=alt.Color("Speaker", scale=alt.Scale(scheme='greens')) # HSE Green theme
+                        color=alt.Color("Speaker", scale=alt.Scale(scheme='greens'))
                     )
-                    
                     pie = base.mark_arc(outerRadius=120, innerRadius=60)
                     text = base.mark_text(radius=140).encode(
                         text="Speaker",
                         order=alt.Order("Words", sort="descending")
                     )
-                    
-                    st.altair_chart(pie + text, use_container_width=True)
+                    st.altair_chart(pie + text, width="stretch")
             
             with c2:
-                st.markdown("#### Conversation Flow") # Removed Emoji
+                st.markdown("#### Conversation Flow")
                 if not df.empty:
-                    # Scatter plot: X=Segment (Time), Y=Speaker
                     scatter = alt.Chart(df).mark_circle(size=100).encode(
                         x=alt.X('Segment', title='Timeline (Sequencing)'),
                         y=alt.Y('Speaker', title=None),
                         color=alt.Color('Speaker', legend=None, scale=alt.Scale(scheme='greens')),
                         tooltip=['Speaker', 'Words', 'Segment']
                     ).interactive()
-                    
-                    st.altair_chart(scatter, use_container_width=True)
+                    st.altair_chart(scatter, width="stretch")
                     
             st.markdown("---")
 
@@ -793,28 +781,76 @@ if st.session_state.transcript:
             with c3:
                 st.markdown("#### Verbosity (Avg Words/Turn)")
                 if not df.empty:
-                    # Average words per turn
                     verbosity = df.groupby("Speaker")["Words"].mean().reset_index()
-                    
                     bar = alt.Chart(verbosity).mark_bar().encode(
                         x=alt.X('Words', title='Avg Words per Turn'),
                         y=alt.Y('Speaker', sort='-x'),
                         color=alt.Color('Speaker', legend=None, scale=alt.Scale(scheme='greens')),
                         tooltip=['Speaker', 'Words']
                     )
-                    st.altair_chart(bar, use_container_width=True)
+                    st.altair_chart(bar, width="stretch")
 
             with c4:
-                st.markdown("#### Meeting Energy (Volume Over Time)")
+                # Rename to "Meeting Activity" to be accurate
+                st.markdown("#### Meeting Activity (Word Volume)")
                 if not df.empty:
-                    # Rolling average or just raw area chart of volume
                     area = alt.Chart(df).mark_area(opacity=0.6, interpolate='step').encode(
                         x=alt.X('Segment', title='Timeline'),
                         y=alt.Y('Words', title='Volume'),
-                        color=alt.value('#00563B'), # Solid HSE Green
+                        color=alt.value('#00563B'),
                         tooltip=['Segment', 'Words', 'Speaker']
                     )
-                    st.altair_chart(area, use_container_width=True)
+                    st.altair_chart(area, width="stretch")
+            
+            st.markdown("---")
+            
+            # --- New Feature: Sentiment Analysis ---
+            if st.button("📉 Analyze Tone/Sentiment"):
+                with st.spinner("Analyzing emotional arc... (This may take a moment)"):
+                    try:
+                        sentiment_prompt = f"""
+                        Analyze the sentiment of this transcript over the course of the meeting. 
+                        Divide the meeting into 10 sequential segments. 
+                        For each segment return a JSON object with:
+                        - 'Segment': int (1-10)
+                        - 'Sentiment': float (-1.0 to 1.0, where -1 is negative/tense, 0 is neutral, 1 is positive)
+                        - 'Label': str (e.g. 'Tense', 'Optimistic', 'Neutral', 'Action-Oriented')
+                        
+                        Return ONLY a JSON list of these objects.
+                        Transcript: {st.session_state.transcript[:30000]} 
+                        """
+                        # Limit transcript length to avoid huge context usage for just sentiment
+                        
+                        response = robust_text_gen(sentiment_prompt)
+                        json_match = re.search(r"(\[[\s\S]*\])", response, re.DOTALL)
+                        
+                        if json_match:
+                            sentiment_data = json.loads(json_match.group(1))
+                            st.session_state.sentiment_df = pd.DataFrame(sentiment_data)
+                        else:
+                            st.error("Could not parse sentiment data.")
+                            
+                    except Exception as e:
+                        st.error(f"Sentiment Analysis Failed: {e}")
+
+            if "sentiment_df" in st.session_state:
+                st.markdown("#### 🎭 Emotional Arc (Tone)")
+                
+                # Color scale condition
+                domain = [-1, 0, 1]
+                range_ = ['#d32f2f', '#fbc02d', '#388e3c'] # Red, Yellow, Green
+
+                sentiment_chart = alt.Chart(st.session_state.sentiment_df).mark_line(point=True).encode(
+                    x=alt.X('Segment', title='Timeline (10 Segments)'),
+                    y=alt.Y('Sentiment', title='Sentiment Score (-1 to 1)', scale=alt.Scale(domain=[-1, 1])),
+                    color=alt.value('#00563B'),
+                    tooltip=['Segment', 'Sentiment', 'Label']
+                ).properties(height=300)
+                
+                # Add a zero line
+                rule = alt.Chart(pd.DataFrame({'y': [0]})).mark_rule(color='gray', strokeDash=[5, 5]).encode(y='y')
+                
+                st.altair_chart(sentiment_chart + rule, width="stretch")
 
         else:
             st.info("Insufficient data to generate analytics. Please transcribe a meeting first.")
