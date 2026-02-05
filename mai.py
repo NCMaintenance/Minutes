@@ -129,6 +129,137 @@ def process_audio_with_rotation(tmp_file_path, context_info):
                 try: genai.delete_file(audio_file.name)
                 except: pass
             
+            st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)import streamlit as st
+import google.generativeai as genai
+import json
+import os
+import time
+from datetime import datetime
+from docx import Document
+from docx.shared import RGBColor, Inches, Pt
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+import urllib.request
+import io
+import tempfile
+import re
+import struct
+import pandas as pd
+import altair as alt
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
+
+# --- Configuration ---
+GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
+TTS_MODEL_NAME = 'gemini-2.5-flash-preview-tts'
+LOGO_URL = "https://www.esther.ie/wp-content/uploads/2022/05/HSE-Logo-Green-NEW-no-background.png"
+FAVICON_URL = "https://assets.hse.ie/static/hse-frontend/assets/favicons/favicon.ico"
+
+# --- API Key Management ---
+def get_available_keys():
+    keys = []
+    key_names = ["GEMINI_API_KEY", "GEMINI_API_KEY2", "GEMINI_API_KEY3"]
+    for name in key_names:
+        if name in st.secrets:
+            keys.append(st.secrets[name])
+    if not keys:
+        st.error("No API Keys found in secrets. Please add GEMINI_API_KEY.")
+        st.stop()
+    return keys
+
+if "key_index" not in st.session_state:
+    st.session_state.key_index = 0
+
+def configure_genai_with_current_key():
+    keys = get_available_keys()
+    if st.session_state.key_index >= len(keys):
+        st.session_state.key_index = 0
+    genai.configure(api_key=keys[st.session_state.key_index])
+    return genai.GenerativeModel(model_name=GEMINI_MODEL_NAME)
+
+# --- Helper: Safe Response Extractor ---
+def safe_get_text(response):
+    try:
+        if not response.candidates: return None
+        candidate = response.candidates[0]
+        if candidate.content.parts: return candidate.content.parts[0].text
+        return None
+    except Exception: return None
+
+# --- Helper: Detect Speakers (Cached) ---
+@st.cache_data
+def detect_speakers(text):
+    """Finds speaker labels like '**Speaker 1**:' or 'Speaker 1:'"""
+    if not text: return []
+    # Regex for bolded or plain speaker labels at start of lines
+    pattern = r'(?m)^(?:[\*\_]{2})?([A-Za-z0-9\s\(\)\-\.]+?)(?:[\*\_]{2})?[:]'
+    matches = re.findall(pattern, text)
+    return sorted(list(set(matches)))
+
+# --- Helper: Add WAV Header ---
+def add_wav_header(pcm_data, sample_rate=24000, channels=1, bit_depth=16):
+    header = b'RIFF'
+    header += struct.pack('<I', 36 + len(pcm_data))
+    header += b'WAVEfmt '
+    header += struct.pack('<I', 16)
+    header += struct.pack('<H', 1)
+    header += struct.pack('<H', channels)
+    header += struct.pack('<I', sample_rate)
+    header += struct.pack('<I', sample_rate * channels * (bit_depth // 8))
+    header += struct.pack('<H', channels * (bit_depth // 8))
+    header += struct.pack('<H', bit_depth)
+    header += b'data'
+    header += struct.pack('<I', len(pcm_data))
+    return header + pcm_data
+
+# --- Robust Audio Processor ---
+def process_audio_with_rotation(tmp_file_path, context_info):
+    max_retries = 6 
+    base_delay = 1
+    keys = get_available_keys()
+    
+    context_str = f"Context: {context_info}" if context_info else ""
+    prompt = f"""
+    You are a precise transcription engine for the Health Service Executive (HSE) Ireland.
+    {context_str}
+    Task: Output the raw transcription of this audio. 
+    Constraint: Do NOT include preamble like "Here is the transcript". Do NOT include markdown blocks. Just the dialogue.
+    Language: Strict Irish English spelling (e.g. 'Programme', 'Paediatric', 'Centre', 'Realise', 'Colour').
+    Format:
+    **Speaker Name**: Text...
+    **Speaker Name**: Text...
+    """
+
+    for attempt in range(max_retries):
+        audio_file = None
+        try:
+            model = configure_genai_with_current_key()
+            if attempt > 0: st.toast(f"Retry {attempt}...", icon="🔄")
+            audio_file = genai.upload_file(path=tmp_file_path, display_name="HSE_Audio")
+            
+            while audio_file.state.name == "PROCESSING":
+                time.sleep(2)
+                audio_file = genai.get_file(audio_file.name)
+            
+            if audio_file.state.name == "FAILED": raise Exception("Audio processing failed.")
+
+            response = model.generate_content([prompt, audio_file], request_options={"timeout": 1200})
+            text = safe_get_text(response)
+            
+            try: genai.delete_file(audio_file.name)
+            except: pass
+            
+            # FIX 6: Guard against empty or failed partial transcripts
+            if text and len(text.strip()) > 20: 
+                return text
+            elif text:
+                 raise Exception("Response too short (potential error)")
+            else: 
+                 raise Exception("Empty response from AI")
+
+        except Exception as e:
+            if audio_file:
+                try: genai.delete_file(audio_file.name)
+                except: pass
+            
             st.session_state.key_index = (st.session_state.key_index + 1) % len(keys)
             time.sleep(base_delay * (1.5 ** attempt))
             
@@ -592,7 +723,7 @@ if st.session_state.transcript:
     st.markdown("---")
     
     # FIX 1: Radio Button Navigation (Persistent) replacement for st.tabs
-    nav_options = ["📄 Transcript", "📊 Analytics", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast", "💬 Chat"]
+    nav_options = ["📄 Transcript", "🏥 Minutes", "📝 Briefing", "🎙️ Podcast", "📊 Analytics", "💬 Chat"]
     
     # Ensure current_view is valid
     if st.session_state.current_view not in nav_options:
@@ -625,7 +756,83 @@ if st.session_state.transcript:
             st.session_state.detected_speakers = detect_speakers(edited_transcript)
             # No rerun needed here, it syncs for next action
 
-    # 2. Analytics (NEW)
+    # 2. Minutes
+    elif selected_view == "🏥 Minutes":
+        if st.button("Generate Minutes", key="btn_min"):
+            with st.spinner("Extracting..."):
+                prompt = f"""
+                Extract structured data from transcript (JSON). 
+                Language: Strict Irish English (e.g. 'Paediatric', 'Programme'). Currency: Euro.
+                Transcript: {st.session_state.transcript}
+                Keys: meetingTitle, meetingDate, startTime, endTime, location, chairperson, minuteTaker, attendees, apologies, mattersArising, declarationsOfInterest, majorProjects, minorProjects, estatesStrategy, healthSafety, riskRegister, financeUpdate, aob, nextMeetingDate.
+                """
+                try:
+                    res = robust_text_gen(prompt)
+                    # FIX 5: Safer JSON extraction with fallback
+                    try:
+                        structured = json.loads(res)
+                    except:
+                        json_match = re.search(r"({[\s\S]*})", res, re.DOTALL)
+                        if json_match:
+                            structured = json.loads(json_match.group(1))
+                        else:
+                            raise Exception("No JSON found in response")
+                            
+                    st.session_state.minutes = generate_hse_minutes(structured)
+                except Exception as e: st.error(f"Error: {e}")
+        
+        if "minutes" in st.session_state:
+            st.text_area("Draft:", st.session_state.minutes, height=600)
+            st.download_button("Download DOCX", create_docx(st.session_state.minutes), "Minutes.docx")
+
+    # 3. Briefing
+    elif selected_view == "📝 Briefing":
+        if st.button("Generate Briefing", key="btn_brief"):
+            with st.spinner("Analyzing..."):
+                prompt = f"""
+                Write a neutral, matter-of-fact Executive Briefing based on this transcript.
+                Language: Strict Irish English spelling (e.g. 'Realise', 'Centre', 'Colour').
+                Do NOT use corporate fluff. Be candid and objective.
+                Sections: Executive Summary, Key Decisions, Critical Risks, Action Items.
+                Transcript: {st.session_state.transcript}
+                """
+                st.session_state.briefing = robust_text_gen(prompt)
+        
+        if "briefing" in st.session_state:
+            st.markdown(st.session_state.briefing)
+            st.download_button("Download Briefing", create_docx(st.session_state.briefing), "Briefing.docx")
+
+    # 4. Podcast
+    elif selected_view == "🎙️ Podcast":
+        st.info("NotebookLM Style: Two neutral analysts discussing the meeting.")
+        if st.button("Generate Script", key="btn_script"):
+            with st.spinner("Writing script..."):
+                prompt = f"""
+                Convert this transcript into a podcast script between two hosts (Host and Expert).
+                Language: Irish English spelling and phrasing.
+                Tone: Candid, neutral, analytical (Like NotebookLM) but with Irish nuances. NOT corporate/PR.
+                They should discuss the meeting outcomes naturally, pointing out interesting dynamics or risks.
+                Transcript: {st.session_state.transcript}
+                """
+                st.session_state.podcast = robust_text_gen(prompt)
+        
+        if "podcast" in st.session_state:
+            st.text_area("Script:", st.session_state.podcast, height=300)
+            if st.button("Generate Audio", key="btn_audio"):
+                with st.spinner("Synthesizing..."):
+                    audio, mime = generate_podcast_audio(st.session_state.podcast)
+                    if audio:
+                        if "pcm" in mime.lower() or "raw" in mime.lower():
+                             audio = add_wav_header(audio)
+                             mime = "audio/wav"
+                        st.session_state.pod_audio = audio
+                        st.session_state.pod_mime = mime
+                    else: st.error("Audio generation failed.")
+        
+        if "pod_audio" in st.session_state:
+            st.audio(st.session_state.pod_audio, format=st.session_state.pod_mime)
+
+    # 5. Analytics (MOVED HERE)
     elif selected_view == "📊 Analytics":
         st.markdown("### Meeting Analytics")
         
@@ -678,7 +885,7 @@ if st.session_state.transcript:
             c1, c2 = st.columns([1, 1])
             
             with c1:
-                st.markdown("#### 🗣️ Share of Voice")
+                st.markdown("#### Share of Voice") # Removed Emoji
                 if not df.empty:
                     # Group by speaker for pie/donut chart
                     speaker_stats = df.groupby("Speaker")["Words"].sum().reset_index()
@@ -697,7 +904,7 @@ if st.session_state.transcript:
                     st.altair_chart(pie + text, use_container_width=True)
             
             with c2:
-                st.markdown("#### 🌊 Conversation Flow")
+                st.markdown("#### Conversation Flow") # Removed Emoji
                 if not df.empty:
                     # Scatter plot: X=Segment (Time), Y=Speaker
                     scatter = alt.Chart(df).mark_circle(size=100).encode(
@@ -711,83 +918,6 @@ if st.session_state.transcript:
 
         else:
             st.info("Insufficient data to generate analytics. Please transcribe a meeting first.")
-
-
-    # 3. Minutes
-    elif selected_view == "🏥 Minutes":
-        if st.button("Generate Minutes", key="btn_min"):
-            with st.spinner("Extracting..."):
-                prompt = f"""
-                Extract structured data from transcript (JSON). 
-                Language: Strict Irish English (e.g. 'Paediatric', 'Programme'). Currency: Euro.
-                Transcript: {st.session_state.transcript}
-                Keys: meetingTitle, meetingDate, startTime, endTime, location, chairperson, minuteTaker, attendees, apologies, mattersArising, declarationsOfInterest, majorProjects, minorProjects, estatesStrategy, healthSafety, riskRegister, financeUpdate, aob, nextMeetingDate.
-                """
-                try:
-                    res = robust_text_gen(prompt)
-                    # FIX 5: Safer JSON extraction with fallback
-                    try:
-                        structured = json.loads(res)
-                    except:
-                        json_match = re.search(r"({[\s\S]*})", res, re.DOTALL)
-                        if json_match:
-                            structured = json.loads(json_match.group(1))
-                        else:
-                            raise Exception("No JSON found in response")
-                            
-                    st.session_state.minutes = generate_hse_minutes(structured)
-                except Exception as e: st.error(f"Error: {e}")
-        
-        if "minutes" in st.session_state:
-            st.text_area("Draft:", st.session_state.minutes, height=600)
-            st.download_button("Download DOCX", create_docx(st.session_state.minutes), "Minutes.docx")
-
-    # 4. Briefing
-    elif selected_view == "📝 Briefing":
-        if st.button("Generate Briefing", key="btn_brief"):
-            with st.spinner("Analyzing..."):
-                prompt = f"""
-                Write a neutral, matter-of-fact Executive Briefing based on this transcript.
-                Language: Strict Irish English spelling (e.g. 'Realise', 'Centre', 'Colour').
-                Do NOT use corporate fluff. Be candid and objective.
-                Sections: Executive Summary, Key Decisions, Critical Risks, Action Items.
-                Transcript: {st.session_state.transcript}
-                """
-                st.session_state.briefing = robust_text_gen(prompt)
-        
-        if "briefing" in st.session_state:
-            st.markdown(st.session_state.briefing)
-            st.download_button("Download Briefing", create_docx(st.session_state.briefing), "Briefing.docx")
-
-    # 5. Podcast
-    elif selected_view == "🎙️ Podcast":
-        st.info("NotebookLM Style: Two neutral analysts discussing the meeting.")
-        if st.button("Generate Script", key="btn_script"):
-            with st.spinner("Writing script..."):
-                prompt = f"""
-                Convert this transcript into a podcast script between two hosts (Host and Expert).
-                Language: Irish English spelling and phrasing.
-                Tone: Candid, neutral, analytical (Like NotebookLM) but with Irish nuances. NOT corporate/PR.
-                They should discuss the meeting outcomes naturally, pointing out interesting dynamics or risks.
-                Transcript: {st.session_state.transcript}
-                """
-                st.session_state.podcast = robust_text_gen(prompt)
-        
-        if "podcast" in st.session_state:
-            st.text_area("Script:", st.session_state.podcast, height=300)
-            if st.button("Generate Audio", key="btn_audio"):
-                with st.spinner("Synthesizing..."):
-                    audio, mime = generate_podcast_audio(st.session_state.podcast)
-                    if audio:
-                        if "pcm" in mime.lower() or "raw" in mime.lower():
-                             audio = add_wav_header(audio)
-                             mime = "audio/wav"
-                        st.session_state.pod_audio = audio
-                        st.session_state.pod_mime = mime
-                    else: st.error("Audio generation failed.")
-        
-        if "pod_audio" in st.session_state:
-            st.audio(st.session_state.pod_audio, format=st.session_state.pod_mime)
 
     # 6. Chat
     elif selected_view == "💬 Chat":
