@@ -251,7 +251,7 @@ st.markdown("""
     
     /* Standard Streamlit Button Override */
     .stButton > button { 
-        background: linear-gradient(135deg, #00563B 0%, #007a53 100%) !important; 
+        background-color: #00563B !important; 
         color: white !important; 
         border: none !important;
         border-radius: 8px !important;
@@ -261,13 +261,14 @@ st.markdown("""
     .stButton > button:hover {
         transform: translateY(-2px);
         box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        background-color: #007a53 !important;
     }
     
     /* Sidebar Background */
     div[data-testid="stSidebar"] { background-color: #f8f9fa; }
     .stInfo { background-color: #e8f5e9; color: #00563B; }
     
-    /* --- Premium Glass Radio Buttons (Tabs & Input Selectors) --- */
+    /* --- Premium Glass Tab-Like Radio Buttons --- */
     
     /* Hide the default radio circle/dot */
     div[role="radiogroup"] > label > div:first-child {
@@ -276,29 +277,27 @@ st.markdown("""
     
     /* Container styling for horizontal alignment */
     div[role="radiogroup"] {
-        background: transparent;
+        background: rgba(255, 255, 255, 0.5);
         display: flex;
         flex-direction: row;
-        gap: 12px;
-        padding: 10px 2px;
+        gap: 8px; /* Tighter gap for tab feel */
+        padding: 6px;
+        border-radius: 12px;
         overflow-x: auto;
-        border: none;
+        border: 1px solid rgba(0,0,0,0.05);
     }
     
-    /* Individual Option Styling (The "Pill") */
+    /* Individual Tab Styling */
     div[role="radiogroup"] label {
-        background: rgba(255, 255, 255, 0.7); /* Glass base */
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border: 1px solid rgba(0, 86, 59, 0.15);
-        padding: 12px 24px;
-        border-radius: 12px;
+        background: transparent;
+        border: 1px solid transparent;
+        padding: 8px 20px;
+        border-radius: 8px; /* Slightly squarer for tab feel */
         cursor: pointer;
-        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1); /* Smooth spring-like transition */
-        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-        color: #444;
+        transition: all 0.2s ease-in-out;
+        color: #555;
         font-weight: 500;
-        min-width: 120px; /* Ensure good touch target */
+        min-width: 100px;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -306,20 +305,17 @@ st.markdown("""
     
     /* Hover State */
     div[role="radiogroup"] label:hover {
-        background: rgba(255, 255, 255, 0.95);
-        transform: translateY(-2px);
-        box-shadow: 0 6px 12px rgba(0,0,0,0.1);
-        border-color: rgba(0, 86, 59, 0.3);
+        background: rgba(0, 86, 59, 0.05);
+        color: #00563B;
     }
     
-    /* Selected State - Premium Green Gradient Highlight */
+    /* Selected State - Matching Heading Green */
     div[role="radiogroup"] label[data-checked="true"] {
-        background: linear-gradient(135deg, #00563B 0%, #007a53 100%) !important;
+        background-color: #00563B !important; /* Exact match to Heading */
         color: white !important;
-        border: 1px solid transparent !important;
-        box-shadow: 0 4px 15px rgba(0, 86, 59, 0.3) !important;
-        transform: translateY(-1px);
+        box-shadow: 0 2px 6px rgba(0, 86, 59, 0.25) !important;
         font-weight: 600;
+        border-radius: 8px;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -609,14 +605,6 @@ if st.session_state.transcript:
                 ans = robust_text_gen(prompt)
                 st.markdown(ans)
                 st.session_state.messages.append({"role": "assistant", "content": ans})
-# --- Footer ---
-st.markdown("---")
-st.markdown(
-    "**Disclaimer:** This implementation has been tested using sample data. "
-    "Adjustments may be required to ensure optimal performance and accuracy with real-world meeting audio. "
-    "Always verify the accuracy of transcriptions and minutes."
-)
-st.markdown("Created by Dave Maher | For HSE internal use.")
 # --- Footer ---
 st.markdown("---")
 st.markdown(
@@ -948,7 +936,7 @@ st.markdown("Created by Dave Maher | For HSE internal use.")
 
 #     st.markdown("---")
 #     if st.button("Created by Dave Maher"):
-#         st.info("Property of Dave Maher.")
+#         st.info("Intellectual Property of Dave Maher.")
 #     st.markdown("**Version:** 5.2")
 
 # # --- Header ---
