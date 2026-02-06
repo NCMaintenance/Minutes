@@ -489,9 +489,9 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 2. Context Input
-    st.markdown("### ℹ️ Meeting Context")
-    context_info = st.text_area("Details (Chair, Topics):", placeholder="e.g. Chair: Sarah. Topic: Budget.", height=80)
+    # # 2. Context Input
+    # st.markdown("### ℹ️ Meeting Context")
+    # context_info = st.text_area("Details (Chair, Topics):", placeholder="e.g. Chair: Sarah. Topic: Budget.", height=80)
     
     # 3. Speaker Renaming
     if st.session_state.transcript:
