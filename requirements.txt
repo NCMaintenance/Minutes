@@ -1,5 +1,6 @@
 streamlit
 google.genai
+google.generativeai 
 python-docx
 audio-recorder-streamlit
 plotly
