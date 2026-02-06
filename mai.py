@@ -541,7 +541,7 @@ with st.sidebar:
     st.markdown("---")
     if st.button("Created by Dave Maher"):
         st.info("Property of Dave Maher.")
-    st.markdown("**Version:** 5.7.0 (Sentiment & Fixes)")
+    st.markdown("**Version:** 5.7.0")
 
 # --- Header ---
 c1, c2 = st.columns([1, 6])
