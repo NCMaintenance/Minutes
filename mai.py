@@ -1,7 +1,7 @@
 import streamlit as st
-#import google.genai as genai
-from google import genai
-from google.genai import types
+import google.generativeai as genai
+# from google import genai
+# from google.genai import types
 import json
 import os
 import time
@@ -16,7 +16,7 @@ import re
 import struct
 import pandas as pd
 import altair as alt
-#from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, PermissionDenied
 
 # --- Configuration ---
 GEMINI_MODEL_NAME = 'gemini-3-flash-preview'
