@@ -487,7 +487,7 @@ with st.sidebar:
             if key not in preserve_keys: del st.session_state[key]
         st.rerun()
     
-    st.markdown("---")
+    # st.markdown("---")
     
     # # 2. Context Input
     # st.markdown("### ℹ️ Meeting Context")
